@@ -82,6 +82,30 @@ describe("native/browser window matching", () => {
 });
 
 describe("capture recovery modes", () => {
+  it("persists a selected browser open mode instead of forcing focus-existing", () => {
+    const recipe = candidateToRecipe({
+      native: nativeWindow,
+      browser: {
+        ...browserWindow(1, 10, 20),
+        tabs: [{
+          id: 1,
+          index: 0,
+          title: "ChatGPT",
+          url: "https://chatgpt.com/",
+          active: true,
+          pinned: false,
+        }],
+      },
+      selected: true,
+      selectedTabs: new Set([0]),
+      manualUrl: "",
+      restoreMode: "open-content",
+      openMode: "new-window",
+      action: "add",
+    });
+    expect(recipe?.openMode).toBe("new-window");
+  });
+
   it("creates a launch-only recipe for an ordinary app without a URL", () => {
     const recipe = candidateToRecipe({
       native: {

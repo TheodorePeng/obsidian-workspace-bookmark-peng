@@ -48,6 +48,7 @@ function candidate(windowId: number, browserWindow = browser(windowId)): Capture
     selected: true,
     selectedTabs: new Set([1]),
     manualUrl: "",
+    openMode: "focus-existing",
     action: "add",
     tabsExpanded: true,
   };
@@ -58,6 +59,7 @@ describe("capture refresh reconciliation", () => {
     const previous = candidate(1);
     previous.manualUrl = "custom://value";
     previous.action = "update";
+    previous.openMode = "new-window";
     previous.targetId = "win_existing";
     const refreshedSurvivor = candidate(1, browser(1, [
       { id: 101, index: 0, title: "B", url: "https://b.example", active: true, pinned: false },
@@ -74,6 +76,7 @@ describe("capture refresh reconciliation", () => {
       selected: true,
       manualUrl: "custom://value",
       action: "update",
+      openMode: "new-window",
       targetId: "win_existing",
       tabsExpanded: true,
     });

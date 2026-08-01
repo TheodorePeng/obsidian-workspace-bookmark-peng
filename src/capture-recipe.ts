@@ -57,7 +57,11 @@ export function candidateToRecipe(candidate: CaptureCandidate): WindowRecipe | n
     bundleId,
     ...(browserId ? { browserId } : {}),
     titleHint: contentTitle || candidate.native.appName,
-    openMode: adapter === "manual" ? "app-default" : "focus-existing",
+    openMode: adapter === "browser" && restoreMode === "open-content"
+      ? candidate.openMode ?? "focus-existing"
+      : adapter === "manual"
+        ? "app-default"
+        : "focus-existing",
     monitor: candidate.native.monitor,
     space: "current",
     layout: frameToLayout(candidate.native.normalizedFrame),

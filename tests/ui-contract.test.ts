@@ -10,6 +10,10 @@ const modals = readFileSync(
   fileURLToPath(new URL("../src/modals.ts", import.meta.url)),
   "utf8",
 );
+const main = readFileSync(
+  fileURLToPath(new URL("../src/main.ts", import.meta.url)),
+  "utf8",
+);
 
 describe("Obsidian modal shell", () => {
   it("uses a bounded shell with an independently scrollable body", () => {
@@ -36,14 +40,25 @@ describe("Obsidian modal shell", () => {
 });
 
 describe("Progressive disclosure contract", () => {
-  it("uses compact rows, direct capture choices, and collapsible browser tabs", () => {
+  it("uses compact checkbox rows, browser-only icon modes, and collapsible browser tabs", () => {
     expect(modals).toContain('cls: "workspace-bookmark-window-row"');
+    expect(modals).toContain('cls: "workspace-bookmark-capture-select"');
+    expect(modals).toContain('cls: "workspace-bookmark-window-open-modes"');
+    expect(modals).toContain('icon: "square-plus"');
+    expect(modals).toContain('icon: "panels-top-left"');
+    expect(modals).toContain('icon: "scan-search"');
+    expect(modals).toContain('function supportsBrowserOpenMode');
     expect(modals).toContain('cls: "workspace-bookmark-capture-tabs"');
-    expect(modals).toContain('text: "忽略"');
-    expect(modals).toContain('const writeLabel = candidate.targetId ? "更新" : "新增"');
+    expect(modals).not.toContain('cls: "workspace-bookmark-capture-choice"');
+    expect(modals).not.toContain('const writeLabel = candidate.targetId ? "更新" : "新增"');
     expect(modals).toContain('text: "仅启动应用"');
     expect(modals).toContain('text: "添加恢复 URL"');
+    expect(css).toContain(".workspace-bookmark-capture-select");
+    expect(css).toContain(".workspace-bookmark-open-mode-icon");
+    expect(css).not.toContain(".workspace-bookmark-capture-choice");
     expect(css).not.toContain(".workspace-bookmark-window-card");
+    expect(main).toContain('openMode: browser ? "focus-existing" : undefined');
+    expect(main).toContain("candidate.openMode = target.openMode");
   });
 
   it("offers explicit live refresh and actionable blocked restore states", () => {

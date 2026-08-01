@@ -462,6 +462,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
         ),
         manualUrl: "",
         restoreMode: browser || isActiveObsidian ? "open-content" : "launch-only",
+        openMode: browser ? "focus-existing" : undefined,
         action: browser || isActiveObsidian ? "add" : "ignore",
       };
       const captured = candidateToRecipe(candidate);
@@ -470,6 +471,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       if (target) {
         candidate.action = "update";
         candidate.targetId = target.id;
+        if (candidate.browser) candidate.openMode = target.openMode;
       } else if (targets.length > 1) {
         candidate.selected = false;
         candidate.action = "ignore";

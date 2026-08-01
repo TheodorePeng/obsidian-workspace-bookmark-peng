@@ -4,6 +4,7 @@ import type {
   BrowserTabSnapshot,
   BrowserWindowSnapshot,
   NativeWindowSnapshot,
+  OpenMode,
   RestoreMode,
 } from "./contracts";
 
@@ -19,6 +20,8 @@ export interface CaptureCandidate {
   selectedTabs: Set<number>;
   manualUrl: string;
   restoreMode?: RestoreMode;
+  /** Temporary Capture-only preference; persisted when a browser recipe is written. */
+  openMode?: OpenMode;
   action: "add" | "update" | "ignore";
   targetId?: string;
   duplicateTargetIds?: string[];
@@ -69,6 +72,7 @@ export function reconcileCaptureSnapshot(
       selectedTabs,
       manualUrl: prior.manualUrl,
       restoreMode: prior.restoreMode ?? candidate.restoreMode,
+      openMode: prior.openMode ?? candidate.openMode,
       action: prior.action,
       targetId: prior.targetId,
       duplicateTargetIds: prior.duplicateTargetIds ?? candidate.duplicateTargetIds,

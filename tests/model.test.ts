@@ -95,6 +95,8 @@ describe("workspace markdown", () => {
     expect(rendered.indexOf("| 打开方式 | 聚焦已有页面 |")).toBeLessThan(
       rendered.indexOf("| 应用 | Google Chrome |"),
     );
+    expect(rendered).toContain("相同 URL 直接切换");
+    expect(rendered).toContain("优先复用窗口（新开页面）");
     expect(rendered).toContain("| 顺序 | 页面标题 | 激活 | 固定 | URL |");
     expect(rendered).not.toContain("## Window ·");
   });

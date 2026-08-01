@@ -735,6 +735,17 @@ export class CaptureModal extends Modal {
       ?? candidate.browserNameHint
       ?? candidate.native.appName;
     const header = row.createDiv({ cls: "workspace-bookmark-window-row-header" });
+    const canSelect = !(!candidate.browser && Boolean(candidate.browserAlternatives?.length))
+      && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
+    const selectionInput = header.createEl("input", {
+      cls: "workspace-bookmark-capture-select",
+      attr: {
+        type: "checkbox",
+        "aria-label": `收录 ${visibleAppName}：${candidate.native.title || "无标题"}`,
+      },
+    });
+    selectionInput.checked = candidate.selected;
+    selectionInput.disabled = !canSelect;
     const identity = header.createDiv({ cls: "workspace-bookmark-window-identity" });
     const icon = identity.createSpan({ cls: "workspace-bookmark-window-icon" });
     setIcon(
@@ -759,37 +770,13 @@ export class CaptureModal extends Modal {
       cls: "workspace-bookmark-window-secondary",
     });
 
-    const intent = header.createDiv({ cls: "workspace-bookmark-window-intent" });
-    const canSelect = !(!candidate.browser && Boolean(candidate.browserAlternatives?.length))
-      && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
-    const ignoreButton = intent.createEl("button", {
-      text: "忽略",
-      cls: "workspace-bookmark-capture-choice",
-      attr: { type: "button", "aria-pressed": String(!candidate.selected) },
-    });
-    const writeLabel = candidate.targetId ? "更新" : "新增";
-    const writeButton = intent.createEl("button", {
-      text: writeLabel,
-      cls: "workspace-bookmark-capture-choice",
-      attr: { type: "button", "aria-pressed": String(candidate.selected) },
-    });
     const applySelection = (selected: boolean) => {
       candidate.selected = selected;
       candidate.action = selected ? candidate.targetId ? "update" : "add" : "ignore";
-      row.toggleClass("is-selected", selected);
-      ignoreButton.toggleClass("is-active", !selected);
-      writeButton.toggleClass("is-active", selected);
-      ignoreButton.setAttribute("aria-pressed", String(!selected));
-      writeButton.setAttribute("aria-pressed", String(selected));
-      manualContainer.toggleClass("is-visible", selected);
+      this.renderCandidates();
       this.updateCaptureSummary();
     };
-    ignoreButton.toggleClass("is-active", !candidate.selected);
-    writeButton.toggleClass("is-active", candidate.selected);
-    ignoreButton.disabled = !canSelect;
-    writeButton.disabled = !canSelect;
-    ignoreButton.addEventListener("click", () => applySelection(false));
-    writeButton.addEventListener("click", () => applySelection(true));
+    selectionInput.addEventListener("change", () => applySelection(selectionInput.checked));
 
     const manualContainer = row.createDiv({ cls: "workspace-bookmark-manual-url" });
     if ((candidate.duplicateTargetIds?.length ?? 0) > 1) {
@@ -811,6 +798,43 @@ export class CaptureModal extends Modal {
     identity.addEventListener("click", () => {
       if (canSelect) applySelection(!candidate.selected);
     });
+
+    if (supportsBrowserOpenMode(candidate)) {
+      const modes = header.createDiv({
+        cls: "workspace-bookmark-window-open-modes",
+        attr: { role: "group", "aria-label": "浏览器打开方式" },
+      });
+      const options: Array<{ value: OpenMode; icon: string; tooltip: string }> = [
+        {
+          value: "new-window",
+          icon: "square-plus",
+          tooltip: "始终新建窗口：每次都创建独立浏览器窗口。",
+        },
+        {
+          value: "reuse-window",
+          icon: "panels-top-left",
+          tooltip: "优先复用窗口：在可用窗口中新开所选页面，相同页面可能重复。",
+        },
+        {
+          value: "focus-existing",
+          icon: "scan-search",
+          tooltip: "聚焦已有页面：完整 URL 已打开时直接切换，否则复用窗口。",
+        },
+      ];
+      for (const option of options) {
+        const button = new ButtonComponent(modes)
+          .setIcon(option.icon)
+          .setTooltip(option.tooltip)
+          .onClick(() => {
+            candidate.openMode = option.value;
+            this.renderCandidates();
+          });
+        button.buttonEl.addClass("workspace-bookmark-open-mode-icon");
+        button.buttonEl.setAttribute("aria-pressed", String(candidate.openMode === option.value));
+        button.buttonEl.setAttribute("aria-label", option.tooltip);
+        button.buttonEl.toggleClass("is-active", candidate.openMode === option.value);
+      }
+    }
 
     const tabs = row.createEl("details", { cls: "workspace-bookmark-capture-tabs" });
     tabs.open = candidate.tabsExpanded ?? false;
@@ -902,6 +926,7 @@ export class CaptureModal extends Modal {
             candidate.action = candidate.selected ? "add" : "ignore";
             candidate.targetId = undefined;
             candidate.restoreMode = "open-content";
+            candidate.openMode = "focus-existing";
             candidate.selectedTabs = new Set(
               candidate.browser?.tabs
                 .filter((tab) => isRestorableBrowserUrl(tab.url))
@@ -1047,6 +1072,12 @@ export class CaptureModal extends Modal {
     const launchOnly = selected.filter((candidate) => candidate.restoreMode === "launch-only").length;
     this.summaryEl.setText(`已选 ${selected.length} · ${selectedTabs} 个页面${launchOnly ? ` · ${launchOnly} 个仅启动` : ""}`);
   }
+}
+
+function supportsBrowserOpenMode(candidate: CaptureCandidate): boolean {
+  return candidate.selected
+    && candidate.restoreMode === "open-content"
+    && Boolean(candidate.browser?.tabs.some((tab) => isRestorableBrowserUrl(tab.url)));
 }
 
 export class CaptureDiffModal extends Modal {

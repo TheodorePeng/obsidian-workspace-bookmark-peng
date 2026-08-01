@@ -348,7 +348,9 @@ export function renderWindowSection(recipe: WindowRecipe): string {
 }
 
 function openModeHint(adapter: WindowAdapter): string {
-  if (adapter === "browser") return "聚焦已有页面 / 优先复用窗口 / 始终新建窗口";
+  if (adapter === "browser") {
+    return "聚焦已有页面（相同 URL 直接切换）/ 优先复用窗口（新开页面）/ 始终新建窗口";
+  }
   if (adapter === "obsidian") return "聚焦已有页面 / 优先复用窗口 / 交给应用处理";
   return "交给应用处理";
 }

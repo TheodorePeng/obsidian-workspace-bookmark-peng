@@ -7440,7 +7440,7 @@ function candidateToRecipe(candidate) {
     bundleId,
     ...browserId ? { browserId } : {},
     titleHint: contentTitle || candidate.native.appName,
-    openMode: adapter === "manual" ? "app-default" : "focus-existing",
+    openMode: adapter === "browser" && restoreMode === "open-content" ? candidate.openMode ?? "focus-existing" : adapter === "manual" ? "app-default" : "focus-existing",
     monitor: candidate.native.monitor,
     space: "current",
     layout: frameToLayout(candidate.native.normalizedFrame),
@@ -7500,6 +7500,7 @@ function reconcileCaptureSnapshot(previous, next) {
       selectedTabs,
       manualUrl: prior.manualUrl,
       restoreMode: prior.restoreMode ?? candidate.restoreMode,
+      openMode: prior.openMode ?? candidate.openMode,
       action: prior.action,
       targetId: prior.targetId,
       duplicateTargetIds: prior.duplicateTargetIds ?? candidate.duplicateTargetIds,
@@ -7905,7 +7906,9 @@ function renderWindowSection(recipe) {
   ].join("\n");
 }
 function openModeHint(adapter) {
-  if (adapter === "browser") return "\u805A\u7126\u5DF2\u6709\u9875\u9762 / \u4F18\u5148\u590D\u7528\u7A97\u53E3 / \u59CB\u7EC8\u65B0\u5EFA\u7A97\u53E3";
+  if (adapter === "browser") {
+    return "\u805A\u7126\u5DF2\u6709\u9875\u9762\uFF08\u76F8\u540C URL \u76F4\u63A5\u5207\u6362\uFF09/ \u4F18\u5148\u590D\u7528\u7A97\u53E3\uFF08\u65B0\u5F00\u9875\u9762\uFF09/ \u59CB\u7EC8\u65B0\u5EFA\u7A97\u53E3";
+  }
   if (adapter === "obsidian") return "\u805A\u7126\u5DF2\u6709\u9875\u9762 / \u4F18\u5148\u590D\u7528\u7A97\u53E3 / \u4EA4\u7ED9\u5E94\u7528\u5904\u7406";
   return "\u4EA4\u7ED9\u5E94\u7528\u5904\u7406";
 }
@@ -8974,6 +8977,16 @@ var CaptureModal = class extends import_obsidian.Modal {
     row.toggleClass("is-selected", candidate.selected);
     const visibleAppName = candidate.browser?.browserName ?? candidate.browserNameHint ?? candidate.native.appName;
     const header = row.createDiv({ cls: "workspace-bookmark-window-row-header" });
+    const canSelect = !(!candidate.browser && Boolean(candidate.browserAlternatives?.length)) && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
+    const selectionInput = header.createEl("input", {
+      cls: "workspace-bookmark-capture-select",
+      attr: {
+        type: "checkbox",
+        "aria-label": `\u6536\u5F55 ${visibleAppName}\uFF1A${candidate.native.title || "\u65E0\u6807\u9898"}`
+      }
+    });
+    selectionInput.checked = candidate.selected;
+    selectionInput.disabled = !canSelect;
     const identity = header.createDiv({ cls: "workspace-bookmark-window-identity" });
     const icon = identity.createSpan({ cls: "workspace-bookmark-window-icon" });
     (0, import_obsidian.setIcon)(
@@ -8993,36 +9006,13 @@ var CaptureModal = class extends import_obsidian.Modal {
       )}`,
       cls: "workspace-bookmark-window-secondary"
     });
-    const intent = header.createDiv({ cls: "workspace-bookmark-window-intent" });
-    const canSelect = !(!candidate.browser && Boolean(candidate.browserAlternatives?.length)) && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
-    const ignoreButton = intent.createEl("button", {
-      text: "\u5FFD\u7565",
-      cls: "workspace-bookmark-capture-choice",
-      attr: { type: "button", "aria-pressed": String(!candidate.selected) }
-    });
-    const writeLabel = candidate.targetId ? "\u66F4\u65B0" : "\u65B0\u589E";
-    const writeButton = intent.createEl("button", {
-      text: writeLabel,
-      cls: "workspace-bookmark-capture-choice",
-      attr: { type: "button", "aria-pressed": String(candidate.selected) }
-    });
     const applySelection = (selected) => {
       candidate.selected = selected;
       candidate.action = selected ? candidate.targetId ? "update" : "add" : "ignore";
-      row.toggleClass("is-selected", selected);
-      ignoreButton.toggleClass("is-active", !selected);
-      writeButton.toggleClass("is-active", selected);
-      ignoreButton.setAttribute("aria-pressed", String(!selected));
-      writeButton.setAttribute("aria-pressed", String(selected));
-      manualContainer.toggleClass("is-visible", selected);
+      this.renderCandidates();
       this.updateCaptureSummary();
     };
-    ignoreButton.toggleClass("is-active", !candidate.selected);
-    writeButton.toggleClass("is-active", candidate.selected);
-    ignoreButton.disabled = !canSelect;
-    writeButton.disabled = !canSelect;
-    ignoreButton.addEventListener("click", () => applySelection(false));
-    writeButton.addEventListener("click", () => applySelection(true));
+    selectionInput.addEventListener("change", () => applySelection(selectionInput.checked));
     const manualContainer = row.createDiv({ cls: "workspace-bookmark-manual-url" });
     if ((candidate.duplicateTargetIds?.length ?? 0) > 1) {
       const warning2 = row.createDiv({ cls: "workspace-bookmark-capture-inline-warning" });
@@ -9041,6 +9031,39 @@ var CaptureModal = class extends import_obsidian.Modal {
     identity.addEventListener("click", () => {
       if (canSelect) applySelection(!candidate.selected);
     });
+    if (supportsBrowserOpenMode(candidate)) {
+      const modes = header.createDiv({
+        cls: "workspace-bookmark-window-open-modes",
+        attr: { role: "group", "aria-label": "\u6D4F\u89C8\u5668\u6253\u5F00\u65B9\u5F0F" }
+      });
+      const options = [
+        {
+          value: "new-window",
+          icon: "square-plus",
+          tooltip: "\u59CB\u7EC8\u65B0\u5EFA\u7A97\u53E3\uFF1A\u6BCF\u6B21\u90FD\u521B\u5EFA\u72EC\u7ACB\u6D4F\u89C8\u5668\u7A97\u53E3\u3002"
+        },
+        {
+          value: "reuse-window",
+          icon: "panels-top-left",
+          tooltip: "\u4F18\u5148\u590D\u7528\u7A97\u53E3\uFF1A\u5728\u53EF\u7528\u7A97\u53E3\u4E2D\u65B0\u5F00\u6240\u9009\u9875\u9762\uFF0C\u76F8\u540C\u9875\u9762\u53EF\u80FD\u91CD\u590D\u3002"
+        },
+        {
+          value: "focus-existing",
+          icon: "scan-search",
+          tooltip: "\u805A\u7126\u5DF2\u6709\u9875\u9762\uFF1A\u5B8C\u6574 URL \u5DF2\u6253\u5F00\u65F6\u76F4\u63A5\u5207\u6362\uFF0C\u5426\u5219\u590D\u7528\u7A97\u53E3\u3002"
+        }
+      ];
+      for (const option of options) {
+        const button = new import_obsidian.ButtonComponent(modes).setIcon(option.icon).setTooltip(option.tooltip).onClick(() => {
+          candidate.openMode = option.value;
+          this.renderCandidates();
+        });
+        button.buttonEl.addClass("workspace-bookmark-open-mode-icon");
+        button.buttonEl.setAttribute("aria-pressed", String(candidate.openMode === option.value));
+        button.buttonEl.setAttribute("aria-label", option.tooltip);
+        button.buttonEl.toggleClass("is-active", candidate.openMode === option.value);
+      }
+    }
     const tabs = row.createEl("details", { cls: "workspace-bookmark-capture-tabs" });
     tabs.open = candidate.tabsExpanded ?? false;
     tabs.addEventListener("toggle", () => {
@@ -9115,6 +9138,7 @@ var CaptureModal = class extends import_obsidian.Modal {
           candidate.action = candidate.selected ? "add" : "ignore";
           candidate.targetId = void 0;
           candidate.restoreMode = "open-content";
+          candidate.openMode = "focus-existing";
           candidate.selectedTabs = new Set(
             candidate.browser?.tabs.filter((tab) => isRestorableBrowserUrl(tab.url)).map((tab) => tab.index) ?? []
           );
@@ -9246,6 +9270,9 @@ var CaptureModal = class extends import_obsidian.Modal {
     this.summaryEl.setText(`\u5DF2\u9009 ${selected.length} \xB7 ${selectedTabs} \u4E2A\u9875\u9762${launchOnly ? ` \xB7 ${launchOnly} \u4E2A\u4EC5\u542F\u52A8` : ""}`);
   }
 };
+function supportsBrowserOpenMode(candidate) {
+  return candidate.selected && candidate.restoreMode === "open-content" && Boolean(candidate.browser?.tabs.some((tab) => isRestorableBrowserUrl(tab.url)));
+}
 var CaptureDiffModal = class extends import_obsidian.Modal {
   constructor(app, diffs, onConfirm) {
     super(app);
@@ -10816,6 +10843,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
         ),
         manualUrl: "",
         restoreMode: browser || isActiveObsidian ? "open-content" : "launch-only",
+        openMode: browser ? "focus-existing" : void 0,
         action: browser || isActiveObsidian ? "add" : "ignore"
       };
       const captured = candidateToRecipe(candidate);
@@ -10824,6 +10852,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       if (target) {
         candidate.action = "update";
         candidate.targetId = target.id;
+        if (candidate.browser) candidate.openMode = target.openMode;
       } else if (targets.length > 1) {
         candidate.selected = false;
         candidate.action = "ignore";
