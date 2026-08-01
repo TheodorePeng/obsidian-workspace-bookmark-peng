@@ -1,7 +1,5 @@
 import type {
-  BrowserTabSnapshot,
   BrowserId,
-  NativeWindowSnapshot,
   WindowRecipe,
   WindowAdapter,
   OpenMode,
@@ -17,7 +15,7 @@ import {
   TFile,
   setIcon,
 } from "obsidian";
-import { createWindowId } from "./ids";
+import { candidateToRecipe, frameToLayout } from "./capture-recipe";
 import {
   isRestorableBrowserUrl,
   reconcileCaptureSnapshot,
@@ -545,12 +543,9 @@ export class CaptureModal extends Modal {
   private summaryEl: HTMLElement | null = null;
   private sourceNoticesEl: HTMLElement | null = null;
   private candidatesEl: HTMLElement | null = null;
-  private scannedAtEl: HTMLElement | null = null;
   private refreshButton: ButtonComponent | null = null;
   private refreshing = false;
-  private readonly candidateToggles = new Map<CaptureCandidate, HTMLInputElement>();
   private readonly candidateRows = new Map<CaptureCandidate, HTMLElement>();
-  private readonly candidateIntentLabels = new Map<CaptureCandidate, HTMLElement>();
 
   constructor(
     app: App,
@@ -571,36 +566,27 @@ export class CaptureModal extends Modal {
   onOpen(): void {
     prepareModal(this, "wide");
     this.titleEl.setText("收录当前 Workspace");
-    createModalIntro(
-      this.contentEl,
-      "选择窗口",
-      "浏览器默认收录整个窗口；只在需要排除页面时展开标签页。",
-      "scan-line",
-    );
     const toolbar = this.contentEl.createDiv({ cls: "workspace-bookmark-capture-toolbar" });
-    const captureStatus = toolbar.createDiv({ cls: "workspace-bookmark-capture-status" });
-    this.summaryEl = captureStatus.createDiv({ cls: "workspace-bookmark-capture-summary" });
-    this.scannedAtEl = captureStatus.createEl("small", {
-      cls: "workspace-bookmark-capture-time",
-    });
-    this.updateScannedAt(this.options.scannedAt);
+    this.summaryEl = toolbar.createDiv({ cls: "workspace-bookmark-capture-summary" });
     const quickActions = toolbar.createDiv({ cls: "workspace-bookmark-quick-actions" });
+    this.sourceNoticesEl = quickActions.createDiv({
+      cls: "workspace-bookmark-capture-bridge-icons",
+    });
     if (this.options.onRefresh) {
       this.refreshButton = new ButtonComponent(quickActions)
-        .setButtonText("刷新窗口")
         .setIcon("refresh-cw")
+        .setTooltip("刷新当前可见窗口")
         .onClick(() => void this.refreshCandidates());
     }
+    this.updateScannedAt(this.options.scannedAt);
     new ButtonComponent(quickActions)
-      .setButtonText("全选")
+      .setIcon("check-check")
+      .setTooltip("全部收录")
       .onClick(() => this.setAllCandidates(true));
     new ButtonComponent(quickActions)
-      .setButtonText("清除")
+      .setIcon("circle-off")
+      .setTooltip("全部忽略")
       .onClick(() => this.setAllCandidates(false));
-
-    this.sourceNoticesEl = this.contentEl.createDiv({
-      cls: "workspace-bookmark-capture-source-notices",
-    });
     this.candidatesEl = this.contentEl.createDiv({
       cls: "workspace-bookmark-capture-candidates",
     });
@@ -633,7 +619,7 @@ export class CaptureModal extends Modal {
               && candidateToRecipe(candidate) == null,
           );
           if (firstInvalid) {
-            this.revealCaptureIssue(firstInvalid, "所选窗口缺少可恢复 URL 或标签页。");
+            this.revealCaptureIssue(firstInvalid, "请先添加恢复内容，或切换为“仅启动应用”。");
             return;
           }
           const operations = this.candidates.flatMap((candidate): CaptureOperation[] => {
@@ -659,7 +645,7 @@ export class CaptureModal extends Modal {
               this.revealCaptureIssue(ambiguous, "请先解决浏览器窗口匹配歧义。");
               return;
             }
-            new Notice("请至少选择一个具有可恢复 URL 的窗口。");
+            new Notice("请至少选择一个要收录的窗口。");
             return;
           }
           await this.onSubmit(operations);
@@ -671,9 +657,7 @@ export class CaptureModal extends Modal {
   private renderCandidates(): void {
     if (!this.candidatesEl) return;
     this.candidatesEl.empty();
-    this.candidateToggles.clear();
     this.candidateRows.clear();
-    this.candidateIntentLabels.clear();
     if (this.candidates.length === 0) {
       const empty = createEmptyState(
         this.candidatesEl,
@@ -751,19 +735,6 @@ export class CaptureModal extends Modal {
       ?? candidate.browserNameHint
       ?? candidate.native.appName;
     const header = row.createDiv({ cls: "workspace-bookmark-window-row-header" });
-    const selection = header.createEl("input", {
-      type: "checkbox",
-      cls: "workspace-bookmark-window-select",
-      attr: {
-        "aria-label": `选择 ${visibleAppName} ${candidate.native.title || "无标题"}`,
-      },
-    });
-    selection.checked = candidate.selected;
-    selection.disabled =
-      (!candidate.browser && Boolean(candidate.browserAlternatives?.length))
-      || (candidate.duplicateTargetIds?.length ?? 0) > 1;
-    this.candidateToggles.set(candidate, selection);
-
     const identity = header.createDiv({ cls: "workspace-bookmark-window-identity" });
     const icon = identity.createSpan({ cls: "workspace-bookmark-window-icon" });
     setIcon(
@@ -789,45 +760,36 @@ export class CaptureModal extends Modal {
     });
 
     const intent = header.createDiv({ cls: "workspace-bookmark-window-intent" });
-    const intentLabel = intent.createSpan({ cls: "workspace-bookmark-intent-label" });
-    this.candidateIntentLabels.set(candidate, intentLabel);
-    this.updateCandidateIntent(candidate);
-    const more = intent.createEl("button", {
-      cls: "clickable-icon workspace-bookmark-icon-action",
-      attr: { "aria-label": "更改写入方式", type: "button" },
+    const canSelect = !(!candidate.browser && Boolean(candidate.browserAlternatives?.length))
+      && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
+    const ignoreButton = intent.createEl("button", {
+      text: "忽略",
+      cls: "workspace-bookmark-capture-choice",
+      attr: { type: "button", "aria-pressed": String(!candidate.selected) },
     });
-    more.title = "更改写入方式";
-    setIcon(more, "more-horizontal");
-    more.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const menu = new Menu();
-      menu.addItem((item) =>
-        item
-          .setTitle("新增 Window")
-          .setChecked(candidate.action === "add")
-          .onClick(() => {
-            candidate.action = "add";
-            candidate.targetId = undefined;
-            this.setCandidateSelected(candidate, true);
-          }),
-      );
-      for (const existing of this.existing) {
-        menu.addItem((item) =>
-          item
-            .setTitle(`更新：${existing.name}`)
-            .setChecked(
-              candidate.action === "update" && candidate.targetId === existing.id,
-            )
-            .onClick(() => {
-              candidate.action = "update";
-              candidate.targetId = existing.id;
-              this.setCandidateSelected(candidate, true);
-            }),
-        );
-      }
-      menu.showAtMouseEvent(event);
+    const writeLabel = candidate.targetId ? "更新" : "新增";
+    const writeButton = intent.createEl("button", {
+      text: writeLabel,
+      cls: "workspace-bookmark-capture-choice",
+      attr: { type: "button", "aria-pressed": String(candidate.selected) },
     });
+    const applySelection = (selected: boolean) => {
+      candidate.selected = selected;
+      candidate.action = selected ? candidate.targetId ? "update" : "add" : "ignore";
+      row.toggleClass("is-selected", selected);
+      ignoreButton.toggleClass("is-active", !selected);
+      writeButton.toggleClass("is-active", selected);
+      ignoreButton.setAttribute("aria-pressed", String(!selected));
+      writeButton.setAttribute("aria-pressed", String(selected));
+      manualContainer.toggleClass("is-visible", selected);
+      this.updateCaptureSummary();
+    };
+    ignoreButton.toggleClass("is-active", !candidate.selected);
+    writeButton.toggleClass("is-active", candidate.selected);
+    ignoreButton.disabled = !canSelect;
+    writeButton.disabled = !canSelect;
+    ignoreButton.addEventListener("click", () => applySelection(false));
+    writeButton.addEventListener("click", () => applySelection(true));
 
     const manualContainer = row.createDiv({ cls: "workspace-bookmark-manual-url" });
     if ((candidate.duplicateTargetIds?.length ?? 0) > 1) {
@@ -846,22 +808,8 @@ export class CaptureModal extends Modal {
           });
       }
     }
-    const updateSelection = (value: boolean) => {
-      candidate.selected = value;
-      candidate.action = value
-        ? candidate.targetId
-          ? "update"
-          : "add"
-        : "ignore";
-      selection.checked = value;
-      row.toggleClass("is-selected", value);
-      manualContainer.toggleClass("is-visible", value);
-      this.updateCandidateIntent(candidate);
-      this.updateCaptureSummary();
-    };
-    selection.addEventListener("change", () => updateSelection(selection.checked));
     identity.addEventListener("click", () => {
-      if (!selection.disabled) updateSelection(!candidate.selected);
+      if (canSelect) applySelection(!candidate.selected);
     });
 
     const tabs = row.createEl("details", { cls: "workspace-bookmark-capture-tabs" });
@@ -875,11 +823,11 @@ export class CaptureModal extends Modal {
       const tabsHeading = tabs.createEl("summary", {
         cls: "workspace-bookmark-tabs-heading",
       });
-      tabsHeading.createSpan({ text: "自定义标签页" });
+      tabsHeading.createSpan({ text: "标签页" });
       const tabSummary = tabsHeading.createEl("small", {
         text: `${candidate.selectedTabs.size}/${candidate.browser.tabs.length}`,
       });
-      const tabActions = tabs.createDiv({ cls: "workspace-bookmark-tab-actions" });
+      const tabActions = tabsHeading.createDiv({ cls: "workspace-bookmark-tab-actions" });
       const selectTabs = (mode: "all" | "active") => {
         candidate.selectedTabs.clear();
         for (const tab of candidate.browser?.tabs ?? []) {
@@ -895,10 +843,18 @@ export class CaptureModal extends Modal {
       };
       new ButtonComponent(tabActions)
         .setButtonText("全部")
-        .onClick(() => selectTabs("all"));
+        .onClick((event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          selectTabs("all");
+        });
       new ButtonComponent(tabActions)
         .setButtonText("仅当前")
-        .onClick(() => selectTabs("active"));
+        .onClick((event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          selectTabs("active");
+        });
       for (const tab of candidate.browser.tabs) {
         const tabRow = new Setting(tabs)
           .setName(tab.title || tab.url)
@@ -945,34 +901,53 @@ export class CaptureModal extends Modal {
             candidate.selected = Boolean(candidate.browser);
             candidate.action = candidate.selected ? "add" : "ignore";
             candidate.targetId = undefined;
-            selection.disabled = !candidate.browser;
-            selection.checked = candidate.selected;
+            candidate.restoreMode = "open-content";
             candidate.selectedTabs = new Set(
               candidate.browser?.tabs
                 .filter((tab) => isRestorableBrowserUrl(tab.url))
                 .map((tab) => tab.index) ?? [],
             );
-            row.toggleClass("is-selected", candidate.selected);
-            renderTabs();
-            this.updateCandidateIntent(candidate);
+            this.renderCandidates();
             this.updateCaptureSummary();
           });
         });
     }
     renderTabs();
-    if (!candidate.browser && !candidate.browserAlternatives?.length && !candidate.obsidianUrl) {
-      new Setting(manualContainer)
-        .setName("恢复 URL")
-        .setDesc("此 App 无适配器，请粘贴 URL Scheme。")
-        .addText((input) =>
-          input
-            .setPlaceholder("scheme://...")
-            .setValue(candidate.manualUrl)
-            .onChange((value) => {
-              candidate.manualUrl = value.trim();
-              this.updateCaptureSummary();
-            }),
-        );
+    if (!candidate.obsidianUrl && !candidate.browser && !candidate.browserAlternatives?.length) {
+      const restoreControls = manualContainer.createDiv({
+        cls: "workspace-bookmark-capture-restore-controls",
+      });
+      const launchOnly = restoreControls.createEl("button", {
+        text: "仅启动应用",
+        cls: "workspace-bookmark-capture-link",
+        attr: { type: "button", "aria-pressed": String(candidate.restoreMode === "launch-only") },
+      });
+      const addUrl = restoreControls.createEl("button", {
+        text: "添加恢复 URL",
+        cls: "workspace-bookmark-capture-link",
+        attr: { type: "button", "aria-pressed": String(candidate.restoreMode === "open-content") },
+      });
+      const input = manualContainer.createEl("input", {
+        cls: "workspace-bookmark-capture-url-input",
+        attr: { type: "url", placeholder: "scheme://..." },
+      });
+      input.value = candidate.manualUrl;
+      const updateRestoreMode = (mode: "launch-only" | "open-content") => {
+        candidate.restoreMode = mode;
+        launchOnly.toggleClass("is-active", mode === "launch-only");
+        addUrl.toggleClass("is-active", mode === "open-content");
+        launchOnly.setAttribute("aria-pressed", String(mode === "launch-only"));
+        addUrl.setAttribute("aria-pressed", String(mode === "open-content"));
+        input.toggleClass("is-visible", mode === "open-content");
+        this.updateCaptureSummary();
+      };
+      launchOnly.addEventListener("click", () => updateRestoreMode("launch-only"));
+      addUrl.addEventListener("click", () => updateRestoreMode("open-content"));
+      input.addEventListener("input", () => {
+        candidate.manualUrl = input.value.trim();
+        this.updateCaptureSummary();
+      });
+      updateRestoreMode(candidate.restoreMode ?? "launch-only");
     }
     manualContainer.toggleClass("is-visible", candidate.selected);
   }
@@ -981,7 +956,7 @@ export class CaptureModal extends Modal {
     if (this.refreshing || !this.options.onRefresh) return;
     this.refreshing = true;
     this.refreshButton?.setDisabled(true);
-    this.refreshButton?.setButtonText("正在刷新…");
+    this.refreshButton?.setIcon("loader-circle");
     try {
       const next = await this.options.onRefresh();
       const reconciled = reconcileCaptureSnapshot(this.candidates, next);
@@ -1005,7 +980,7 @@ export class CaptureModal extends Modal {
     } finally {
       this.refreshing = false;
       this.refreshButton?.setDisabled(false);
-      this.refreshButton?.setButtonText("刷新窗口");
+      this.refreshButton?.setIcon("refresh-cw");
     }
   }
 
@@ -1013,83 +988,43 @@ export class CaptureModal extends Modal {
     if (!this.sourceNoticesEl) return;
     this.sourceNoticesEl.empty();
     for (const notice of notices) {
-      const row = this.sourceNoticesEl.createDiv({
-        cls: `workspace-bookmark-capture-source-notice is-${notice.tone}`,
+      const row = this.sourceNoticesEl.createEl("button", {
+        cls: `clickable-icon workspace-bookmark-capture-source-icon is-${notice.tone}`,
+        attr: { type: "button", "aria-label": notice.message },
       });
-      const icon = row.createSpan();
-      setIcon(icon, notice.tone === "warning" ? "wifi-off" : "info");
-      row.createSpan({ text: notice.message });
+      row.title = notice.message;
+      setIcon(row, notice.tone === "warning" ? "wifi-off" : "circle-alert");
+      row.addEventListener("click", () => void this.options.onDiagnostics?.());
     }
   }
 
   private updateScannedAt(value?: string): void {
-    if (!this.scannedAtEl) return;
-    if (!value) {
-      this.scannedAtEl.setText("");
-      return;
-    }
+    if (!this.refreshButton) return;
+    if (!value) return;
     const date = new Date(value);
-    this.scannedAtEl.setText(
-      Number.isNaN(date.getTime())
-        ? ""
-        : `上次扫描 ${date.toLocaleTimeString("zh-CN", {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          })}`,
+    if (Number.isNaN(date.getTime())) return;
+    this.refreshButton.setTooltip(
+      `刷新当前可见窗口（上次扫描 ${date.toLocaleTimeString("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })}）`,
     );
   }
 
   private setAllCandidates(selected: boolean): void {
     for (const candidate of this.candidates) {
-      const canRestore = Boolean(
-        candidate.browser
-        || candidate.obsidianUrl
-        || candidate.manualUrl,
-      ) && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
-      candidate.selected = selected && canRestore;
+      const canSelect = !(!candidate.browser && Boolean(candidate.browserAlternatives?.length))
+        && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
+      candidate.selected = selected && canSelect;
       candidate.action = candidate.selected
         ? candidate.targetId
           ? "update"
           : "add"
         : "ignore";
-      const toggle = this.candidateToggles.get(candidate);
-      if (toggle) toggle.checked = candidate.selected;
-      const row = this.candidateRows.get(candidate);
-      row?.classList.toggle("is-selected", candidate.selected);
-      row
-        ?.querySelector(".workspace-bookmark-manual-url")
-        ?.classList.toggle("is-visible", candidate.selected);
-      this.updateCandidateIntent(candidate);
     }
+    this.renderCandidates();
     this.updateCaptureSummary();
-  }
-
-  private setCandidateSelected(candidate: CaptureCandidate, selected: boolean): void {
-    candidate.selected = selected;
-    const toggle = this.candidateToggles.get(candidate);
-    if (toggle) toggle.checked = selected;
-    const row = this.candidateRows.get(candidate);
-    row?.classList.toggle("is-selected", selected);
-    row
-      ?.querySelector(".workspace-bookmark-manual-url")
-      ?.classList.toggle("is-visible", selected);
-    this.updateCandidateIntent(candidate);
-    this.updateCaptureSummary();
-  }
-
-  private updateCandidateIntent(candidate: CaptureCandidate): void {
-    const label = this.candidateIntentLabels.get(candidate);
-    if (!label) return;
-    const updating = candidate.action === "update" && Boolean(candidate.targetId);
-    label.setText(
-      candidate.action === "ignore" || !candidate.selected
-        ? "忽略"
-        : updating
-          ? "更新"
-          : "新增",
-    );
-    label.toggleClass("is-update", updating);
   }
 
   private revealCaptureIssue(candidate: CaptureCandidate, message: string): void {
@@ -1109,15 +1044,8 @@ export class CaptureModal extends Modal {
       (total, candidate) => total + candidate.selectedTabs.size,
       0,
     );
-    const needsUrl = selected.filter(
-      (candidate) => !candidate.browser && !candidate.obsidianUrl && !candidate.manualUrl,
-    ).length;
-    this.summaryEl.setText(
-      `已选 ${selected.length} 个窗口 · ${selectedTabs} 个页面${
-        needsUrl > 0 ? ` · ${needsUrl} 个待补 URL` : ""
-      }`,
-    );
-    this.summaryEl.toggleClass("is-warning", needsUrl > 0);
+    const launchOnly = selected.filter((candidate) => candidate.restoreMode === "launch-only").length;
+    this.summaryEl.setText(`已选 ${selected.length} · ${selectedTabs} 个页面${launchOnly ? ` · ${launchOnly} 个仅启动` : ""}`);
   }
 }
 
@@ -1182,8 +1110,8 @@ export class MigrationPreviewModal extends Modal {
     this.titleEl.setText("升级 Workspace Markdown");
     createModalIntro(
       this.contentEl,
-      "需要先迁移到 V3",
-      "Capture 只会向 V3 文档写入。迁移会改用 APP 标题、可编辑设置和折叠只读信息，普通正文与自定义 frontmatter 保持不变。",
+      "需要先迁移到 V4",
+      "Capture 只会向 V4 文档写入。迁移会保留 APP 标题、可编辑设置、折叠只读信息、普通正文与自定义 frontmatter。",
       "file-up",
       "warning",
     );
@@ -1310,6 +1238,33 @@ export class WindowEditorModal extends Modal {
       this.draft.name,
       (value) => (this.draft.name = value),
     );
+    let updateContentsVisibility: (() => void) | null = null;
+    new Setting(general)
+      .setName("恢复方式")
+      .setDesc("仅启动应用时不需要 URL 或标签页。")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("open-content", "恢复页面或文档")
+          .addOption("launch-only", "仅启动应用")
+          .setValue(this.draft.restoreMode ?? "open-content")
+          .onChange((value) => {
+            this.draft.restoreMode = value as "open-content" | "launch-only";
+            if (this.draft.restoreMode === "launch-only") {
+              this.draft.contents = [];
+            } else if (this.draft.contents.length === 0) {
+              this.draft.contents = [{
+                order: 1,
+                title: "",
+                url: "https://",
+                active: true,
+                pinned: false,
+              }];
+            }
+            updateContentsVisibility?.();
+            this.renderContents();
+            this.updateError();
+          });
+      });
     let modeDropdown: import("obsidian").DropdownComponent | null = null;
     new Setting(general)
       .setName("打开方式")
@@ -1399,6 +1354,10 @@ export class WindowEditorModal extends Modal {
     this.contentsContainer = contentsSection.createDiv({
       cls: "workspace-bookmark-contents-list",
     });
+    updateContentsVisibility = () => {
+      contentsSection.toggleClass("is-hidden", this.draft.restoreMode === "launch-only");
+    };
+    updateContentsVisibility();
     this.renderContents();
 
     const advanced = form.createEl("details", {
@@ -1840,6 +1799,10 @@ function validateDraft(recipe: WindowRecipe): string | null {
   }
   const layoutError = validateLayout(recipe.layout);
   if (layoutError) return layoutError;
+  const restoreMode = recipe.restoreMode ?? "open-content";
+  if (restoreMode === "launch-only") {
+    return recipe.contents.length === 0 ? null : "仅启动应用时不能包含打开内容。";
+  }
   if (recipe.contents.length === 0) return "Contents 至少需要一项。";
   if (recipe.contents.filter((item) => item.active).length > 1) return "最多只能有一项激活。";
   if (recipe.contents.some((item) => !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(item.url))) {
@@ -1870,99 +1833,6 @@ function configureModeDropdown(
   };
   for (const mode of modesForAdapter(recipe.adapter)) dropdown.addOption(mode, labels[mode]);
   dropdown.setValue(recipe.openMode);
-}
-
-export function candidateToRecipe(candidate: CaptureCandidate): WindowRecipe | null {
-  let adapter: WindowAdapter = "manual";
-  let appName = candidate.native.appName;
-  let bundleId = candidate.native.bundleId;
-  let browserId: BrowserId | undefined;
-  let contents: WindowRecipe["contents"] = [];
-  if (candidate.browser) {
-    adapter = "browser";
-    appName = candidate.browser.browserName;
-    bundleId = candidate.browser.browserBundleId;
-    browserId = candidate.browser.browserId;
-    contents = candidate.browser.tabs
-      .filter((tab) => candidate.selectedTabs.has(tab.index))
-      .map(tabToContent);
-  } else if (candidate.obsidianUrl) {
-    adapter = "obsidian";
-    appName = "Obsidian";
-    bundleId = "md.obsidian";
-    contents = [
-      {
-        order: 1,
-        title: candidate.native.title,
-        url: candidate.obsidianUrl,
-        active: true,
-        pinned: false,
-      },
-    ];
-  } else if (candidate.manualUrl) {
-    contents = [
-      {
-        order: 1,
-        title: candidate.native.title,
-        url: candidate.manualUrl,
-        active: true,
-        pinned: false,
-      },
-    ];
-  }
-  if (contents.length === 0) return null;
-  if (!contents.some((item) => item.active)) contents[0]!.active = true;
-  const contentTitle =
-    contents.find((item) => item.active)?.title || contents[0]?.title || candidate.native.title;
-  return {
-    id: createWindowId(),
-    name: contentTitle || candidate.native.appName,
-    adapter,
-    appName,
-    bundleId,
-    ...(browserId ? { browserId } : {}),
-    titleHint: contentTitle,
-    openMode: adapter === "manual" ? "app-default" : "focus-existing",
-    monitor: candidate.native.monitor,
-    space: "current",
-    layout: frameToLayout(candidate.native.normalizedFrame),
-    contents,
-  };
-}
-
-function tabToContent(tab: BrowserTabSnapshot) {
-  return {
-    order: tab.index + 1,
-    title: tab.title,
-    url: tab.url,
-    active: tab.active,
-    pinned: tab.pinned,
-  };
-}
-
-function frameToLayout(frame: NativeWindowSnapshot["normalizedFrame"]): string {
-  const epsilon = 0.035;
-  const close = (left: number, right: number) => Math.abs(left - right) <= epsilon;
-  if (close(frame.x, 0) && close(frame.y, 0) && close(frame.width, 1) && close(frame.height, 1)) {
-    return "full";
-  }
-  if (close(frame.x, 0) && close(frame.y, 0) && close(frame.height, 1)) {
-    return `left ${round(frame.width)}`;
-  }
-  if (close(frame.x + frame.width, 1) && close(frame.y, 0) && close(frame.height, 1)) {
-    return `right ${round(frame.width)}`;
-  }
-  if (close(frame.x, 0) && close(frame.y, 0) && close(frame.width, 1)) {
-    return `top ${round(frame.height)}`;
-  }
-  if (close(frame.x, 0) && close(frame.y + frame.height, 1) && close(frame.width, 1)) {
-    return `bottom ${round(frame.height)}`;
-  }
-  return `frame ${round(frame.x)} ${round(frame.y)} ${round(frame.width)} ${round(frame.height)}`;
-}
-
-function round(value: number): string {
-  return Math.max(0, Math.min(1, Math.round(value * 1000) / 1000)).toString();
 }
 
 type ModalSize = "compact" | "standard" | "wide";

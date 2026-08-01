@@ -7,6 +7,7 @@ export type OpenMode =
   | "reuse-window"
   | "focus-existing"
   | "app-default";
+export type RestoreMode = "open-content" | "launch-only";
 export type MonitorRole =
   | "current"
   | "main"
@@ -33,13 +34,15 @@ export interface WindowRecipe {
   monitor: MonitorRole;
   space: string;
   layout: string;
+  /** Missing in V1–V3 documents; those recipes restore their content. */
+  restoreMode?: RestoreMode;
   contents: WorkspaceContent[];
 }
 
 export interface WorkspaceDocument {
   id: string;
   name: string;
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
   tags: string[];
   windows: WindowRecipe[];
 }

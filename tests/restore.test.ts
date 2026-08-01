@@ -65,4 +65,17 @@ describe("restore readiness", () => {
     expect(result.runnable).toEqual([tabbit]);
     expect(result.issues[0]?.message).toBe("Target display is unavailable.");
   });
+
+  it("allows a launch-only browser recipe when its bridge is offline", () => {
+    const chrome = browserRecipe("chrome", "chrome");
+    chrome.restoreMode = "launch-only";
+    chrome.contents = [];
+    const result = partitionRestoreReadiness(
+      [chrome],
+      [{ id: "chrome", ok: true, message: "Ready." }],
+      [{ browserId: "chrome", connected: false }],
+    );
+    expect(result.runnable).toEqual([chrome]);
+    expect(result.issues).toEqual([]);
+  });
 });

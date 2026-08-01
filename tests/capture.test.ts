@@ -8,6 +8,7 @@ import {
   browserOwnsNativeWindow,
   uniqueBrowserMatch,
 } from "../src/capture";
+import { candidateToRecipe } from "../src/capture-recipe";
 
 const nativeWindow: NativeWindowSnapshot = {
   windowId: 1,
@@ -77,5 +78,29 @@ describe("native/browser window matching", () => {
     expect(browserMatchCandidates(appModeNative, [browserWindow(1, 10, 20), tabbit])).toEqual([
       tabbit,
     ]);
+  });
+});
+
+describe("capture recovery modes", () => {
+  it("creates a launch-only recipe for an ordinary app without a URL", () => {
+    const recipe = candidateToRecipe({
+      native: {
+        ...nativeWindow,
+        appName: "Music",
+        bundleId: "com.apple.Music",
+        title: "Music",
+      },
+      selected: true,
+      selectedTabs: new Set(),
+      manualUrl: "",
+      restoreMode: "launch-only",
+      action: "add",
+    });
+    expect(recipe).toMatchObject({
+      adapter: "manual",
+      restoreMode: "launch-only",
+      contents: [],
+      bundleId: "com.apple.Music",
+    });
   });
 });

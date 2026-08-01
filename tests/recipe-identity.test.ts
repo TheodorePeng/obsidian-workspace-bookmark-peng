@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WindowRecipe } from "../src/contracts";
 import {
+  captureRecipeKey,
   deduplicateFocusExistingRecipes,
   findDuplicateFocusExistingGroups,
 } from "../src/recipe-identity";
@@ -58,5 +59,21 @@ describe("focus-existing duplicate safety", () => {
       browserId: "tabbit" as const,
     };
     expect(findDuplicateFocusExistingGroups([chrome, tabbit])).toEqual([]);
+  });
+
+  it("matches launch-only recipes by app, title, and placement instead of an empty URL list", () => {
+    const music = recipe("win_music");
+    music.adapter = "manual";
+    music.appName = "Music";
+    music.bundleId = "com.apple.Music";
+    delete music.browserId;
+    music.titleHint = "Music";
+    music.openMode = "app-default";
+    music.restoreMode = "launch-only";
+    music.contents = [];
+    const elsewhere = structuredClone(music);
+    elsewhere.id = "win_music_other";
+    elsewhere.layout = "right 0.4";
+    expect(captureRecipeKey(music)).not.toBe(captureRecipeKey(elsewhere));
   });
 });

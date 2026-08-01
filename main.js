@@ -7395,6 +7395,92 @@ function createWindowId() {
 // src/modals.ts
 var import_obsidian = require("obsidian");
 
+// src/capture-recipe.ts
+function candidateToRecipe(candidate) {
+  const restoreMode = candidate.restoreMode ?? (candidate.browser || candidate.obsidianUrl || candidate.manualUrl ? "open-content" : "launch-only");
+  let adapter = "manual";
+  let appName = candidate.native.appName;
+  let bundleId = candidate.native.bundleId;
+  let browserId;
+  let contents = [];
+  if (candidate.browser || candidate.browserIdHint) {
+    adapter = "browser";
+    appName = candidate.browser?.browserName ?? candidate.browserNameHint ?? appName;
+    bundleId = candidate.browser?.browserBundleId ?? bundleId;
+    browserId = candidate.browser?.browserId ?? candidate.browserIdHint;
+    contents = (candidate.browser?.tabs ?? []).filter((tab) => candidate.selectedTabs.has(tab.index)).map(tabToContent);
+  } else if (candidate.obsidianUrl) {
+    adapter = "obsidian";
+    appName = "Obsidian";
+    bundleId = "md.obsidian";
+    contents = [{
+      order: 1,
+      title: candidate.native.title,
+      url: candidate.obsidianUrl,
+      active: true,
+      pinned: false
+    }];
+  } else if (candidate.manualUrl) {
+    contents = [{
+      order: 1,
+      title: candidate.native.title,
+      url: candidate.manualUrl,
+      active: true,
+      pinned: false
+    }];
+  }
+  if (restoreMode === "open-content" && contents.length === 0) return null;
+  if (contents.length > 0 && !contents.some((item) => item.active)) contents[0].active = true;
+  const contentTitle = contents.find((item) => item.active)?.title || contents[0]?.title || candidate.native.title;
+  return {
+    id: createWindowId(),
+    name: contentTitle || candidate.native.appName,
+    adapter,
+    appName,
+    bundleId,
+    ...browserId ? { browserId } : {},
+    titleHint: contentTitle || candidate.native.appName,
+    openMode: adapter === "manual" ? "app-default" : "focus-existing",
+    monitor: candidate.native.monitor,
+    space: "current",
+    layout: frameToLayout(candidate.native.normalizedFrame),
+    restoreMode,
+    contents
+  };
+}
+function frameToLayout(frame) {
+  const epsilon = 0.035;
+  const close = (left, right) => Math.abs(left - right) <= epsilon;
+  if (close(frame.x, 0) && close(frame.y, 0) && close(frame.width, 1) && close(frame.height, 1)) {
+    return "full";
+  }
+  if (close(frame.x, 0) && close(frame.y, 0) && close(frame.height, 1)) {
+    return `left ${round(frame.width)}`;
+  }
+  if (close(frame.x + frame.width, 1) && close(frame.y, 0) && close(frame.height, 1)) {
+    return `right ${round(frame.width)}`;
+  }
+  if (close(frame.x, 0) && close(frame.y, 0) && close(frame.width, 1)) {
+    return `top ${round(frame.height)}`;
+  }
+  if (close(frame.x, 0) && close(frame.y + frame.height, 1) && close(frame.width, 1)) {
+    return `bottom ${round(frame.height)}`;
+  }
+  return `frame ${round(frame.x)} ${round(frame.y)} ${round(frame.width)} ${round(frame.height)}`;
+}
+function tabToContent(tab) {
+  return {
+    order: tab.index + 1,
+    title: tab.title,
+    url: tab.url,
+    active: tab.active,
+    pinned: tab.pinned
+  };
+}
+function round(value) {
+  return Math.max(0, Math.min(1, Math.round(value * 1e3) / 1e3)).toString();
+}
+
 // src/capture.ts
 function reconcileCaptureSnapshot(previous, next) {
   const previousByKey = new Map(previous.map((candidate) => [
@@ -7413,6 +7499,7 @@ function reconcileCaptureSnapshot(previous, next) {
       selected: prior.selected,
       selectedTabs,
       manualUrl: prior.manualUrl,
+      restoreMode: prior.restoreMode ?? candidate.restoreMode,
       action: prior.action,
       targetId: prior.targetId,
       duplicateTargetIds: prior.duplicateTargetIds ?? candidate.duplicateTargetIds,
@@ -7514,6 +7601,17 @@ var import_yaml = __toESM(require_dist(), 1);
 // src/recipe-identity.ts
 function captureRecipeKey(recipe) {
   const owner = recipe.adapter === "browser" ? recipe.browserId ?? recipe.bundleId : recipe.bundleId;
+  if ((recipe.restoreMode ?? "open-content") === "launch-only") {
+    return [
+      recipe.adapter,
+      owner,
+      "launch-only",
+      recipe.titleHint.trim().toLocaleLowerCase(),
+      recipe.monitor,
+      recipe.space,
+      recipe.layout
+    ].join("\0");
+  }
   return [
     recipe.adapter,
     owner,
@@ -7571,6 +7669,7 @@ var MODES = /* @__PURE__ */ new Set([
   "focus-existing",
   "app-default"
 ]);
+var RESTORE_MODES = /* @__PURE__ */ new Set(["open-content", "launch-only"]);
 var MONITORS = /* @__PURE__ */ new Set([
   "current",
   "main",
@@ -7608,6 +7707,11 @@ var OPEN_MODE_LABELS = {
   "app-default": "\u4EA4\u7ED9\u5E94\u7528\u5904\u7406"
 };
 var OPEN_MODE_VALUES = reverseMap(OPEN_MODE_LABELS);
+var RESTORE_MODE_LABELS = {
+  "open-content": "\u6062\u590D\u9875\u9762\u6216\u6587\u6863",
+  "launch-only": "\u4EC5\u542F\u52A8\u5E94\u7528"
+};
+var RESTORE_MODE_VALUES = reverseMap(RESTORE_MODE_LABELS);
 var MONITOR_LABELS = {
   current: "\u5F53\u524D\u5C4F\u5E55",
   main: "\u4E3B\u5C4F\u5E55",
@@ -7623,7 +7727,7 @@ function parseWorkspaceMarkdown(source, options = {}) {
   const frontmatter = frontmatterResult.value;
   const managed = frontmatter?.type === "workspace";
   const schemaNumber = Number(frontmatter?.schema_version);
-  const sectionVersion = schemaNumber === 1 ? 1 : schemaNumber === 2 ? 2 : 3;
+  const sectionVersion = schemaNumber === 1 ? 1 : schemaNumber === 2 ? 2 : schemaNumber === 3 ? 3 : 4;
   const sections = findWindowSections(lines, sectionVersion);
   if (!managed) {
     return { workspace: null, diagnostics, managed: false, sections, frontmatter };
@@ -7637,8 +7741,8 @@ function parseWorkspaceMarkdown(source, options = {}) {
   if (!name.trim()) {
     diagnostics.push(error("WORKSPACE_NAME", "name \u4E0D\u80FD\u4E3A\u7A7A\u3002", 1, void 0, "name"));
   }
-  if (schemaNumber !== 1 && schemaNumber !== 2 && schemaNumber !== 3) {
-    diagnostics.push(error("SCHEMA_VERSION", "schema_version \u5FC5\u987B\u4E3A 1\u30012 \u6216 3\u3002", 1, void 0, "schema_version"));
+  if (schemaNumber !== 1 && schemaNumber !== 2 && schemaNumber !== 3 && schemaNumber !== 4) {
+    diagnostics.push(error("SCHEMA_VERSION", "schema_version \u5FC5\u987B\u4E3A 1\u30012\u30013 \u6216 4\u3002", 1, void 0, "schema_version"));
   }
   if (new Set(tags).size !== tags.length) {
     diagnostics.push(error("TAGS_DUPLICATE", "tags \u4E0D\u5F97\u91CD\u590D\u3002", 1, void 0, "tags"));
@@ -7720,7 +7824,7 @@ function validateLayout(layout) {
   return null;
 }
 function formatWorkspaceMarkdown(source, parsed) {
-  if (!parsed.managed || !parsed.workspace || parsed.workspace.schemaVersion !== 3 || parsed.diagnostics.some((item) => item.severity === "error")) return source;
+  if (!parsed.managed || !parsed.workspace || parsed.workspace.schemaVersion !== 4 || parsed.diagnostics.some((item) => item.severity === "error")) return source;
   return rewriteSections(source, parsed.sections, false);
 }
 function replaceWindowSection(source, section, recipe) {
@@ -7748,11 +7852,13 @@ function removeWindowSections(source, parsed, windowIds) {
   return restoreEol(result.replace(/\n{3,}$/g, "\n\n"), eol);
 }
 function renderWindowSection(recipe) {
+  const restoreMode = recipe.restoreMode ?? "open-content";
   const editableFields = [
+    ["\u6062\u590D\u65B9\u5F0F", RESTORE_MODE_LABELS[restoreMode], "\u6062\u590D\u9875\u9762\u6216\u6587\u6863 / \u4EC5\u542F\u52A8\u5E94\u7528"],
     ["\u6253\u5F00\u65B9\u5F0F", OPEN_MODE_LABELS[recipe.openMode], openModeHint(recipe.adapter)],
     ["\u5C4F\u5E55", MONITOR_LABELS[recipe.monitor], "\u5F53\u524D\u5C4F\u5E55 / \u4E3B\u5C4F\u5E55 / Mac \u5185\u7F6E\u5C4F\u5E55 / \u4E3B\u8981\u5916\u63A5\u5C4F\u5E55"],
     ["\u5E03\u5C40", recipe.layout, "full / keep / left 0.5 / right 0.4 / center 0.8 0.7 / frame 0 0 1 1"],
-    ["Space", recipe.space === "current" ? "\u5F53\u524D" : recipe.space, "V3 \u4EC5\u652F\u6301\u5F53\u524D"],
+    ["Space", recipe.space === "current" ? "\u5F53\u524D" : recipe.space, "\u5F53\u524D\u7248\u672C\u4EC5\u652F\u6301\u5F53\u524D"],
     ["\u6807\u9898\u5339\u914D", recipe.titleHint, "\u4EFB\u610F\u7A97\u53E3\u6807\u9898\u7247\u6BB5\uFF0C\u7528\u4E8E\u5339\u914D\u7A97\u53E3"]
   ];
   const readonlyFields = [
@@ -7765,6 +7871,14 @@ function renderWindowSection(recipe) {
   const contentRows = [...recipe.contents].sort((left, right) => left.order - right.order).map(
     (item) => `| ${item.order} | ${escapeCell(item.title)} | ${item.active ? "\u662F" : "\u5426"} | ${item.pinned ? "\u662F" : "\u5426"} | \`${escapeCode(item.url)}\` |`
   ).join("\n");
+  const contentSection = restoreMode === "open-content" ? [
+    "",
+    "### \u6253\u5F00\u5185\u5BB9",
+    "",
+    "| \u987A\u5E8F | \u9875\u9762\u6807\u9898 | \u6FC0\u6D3B | \u56FA\u5B9A | URL |",
+    "|---:|---|:---:|:---:|---|",
+    contentRows
+  ] : [];
   return [
     `## ${safeHeading(recipe.appName)} \xB7 ${safeHeading(recipe.name)}`,
     "",
@@ -7775,12 +7889,7 @@ function renderWindowSection(recipe) {
     ...editableFields.map(
       ([key, value, hint]) => `| ${escapeCell(key)} | ${escapeCell(value)} | ${escapeCell(hint)} |`
     ),
-    "",
-    "### \u6253\u5F00\u5185\u5BB9",
-    "",
-    "| \u987A\u5E8F | \u9875\u9762\u6807\u9898 | \u6FC0\u6D3B | \u56FA\u5B9A | URL |",
-    "|---:|---|:---:|:---:|---|",
-    contentRows,
+    ...contentSection,
     "",
     "### \u53EA\u8BFB\u4FE1\u606F",
     "",
@@ -7805,7 +7914,7 @@ function createWorkspaceTemplate(id, name) {
     type: "workspace",
     workspace_id: id,
     name,
-    schema_version: 3,
+    schema_version: 4,
     tags: []
   }).trimEnd();
   return `---
@@ -7840,7 +7949,7 @@ function initializeWorkspaceMarkdown(source, id, name) {
     type: "workspace",
     workspace_id: id,
     name: stringValue(frontmatter.name) || headingName(body) || name,
-    schema_version: 3,
+    schema_version: 4,
     tags: Array.isArray(frontmatter.tags) ? frontmatter.tags : []
   };
   const renderedFrontmatter = (0, import_yaml.stringify)(initialized).trimEnd();
@@ -7858,7 +7967,7 @@ function migrateWorkspaceMarkdownToLatest(source, options = {}) {
   if (!parsed.managed || !parsed.workspace || errors.length > 0) {
     return { ok: false, source, diagnostics: parsed.diagnostics, headingChanges: [] };
   }
-  if (parsed.workspace.schemaVersion === 3) {
+  if (parsed.workspace.schemaVersion === 4) {
     return { ok: true, source, diagnostics: [], headingChanges: [] };
   }
   const usedHeadings = /* @__PURE__ */ new Set();
@@ -7878,8 +7987,8 @@ function migrateWorkspaceMarkdownToLatest(source, options = {}) {
   });
   let migrated = rewriteSections(source, migratedSections, true);
   migrated = migrated.replace(
-    /(^---\r?\n[\s\S]*?^schema_version:\s*)(1|2)(\s*$[\s\S]*?^---\s*$)/m,
-    (_match, prefix, _version, suffix) => `${prefix}3${suffix}`
+    /(^---\r?\n[\s\S]*?^schema_version:\s*)(1|2|3)(\s*$[\s\S]*?^---\s*$)/m,
+    (_match, prefix, _version, suffix) => `${prefix}4${suffix}`
   );
   const verified = parseWorkspaceMarkdown(migrated, options);
   if (verified.diagnostics.some((item) => item.severity === "error")) {
@@ -7902,7 +8011,7 @@ function rewriteSections(source, sections, migrating) {
     const rendered = renderWindowSectionPreserving(
       current,
       section.recipe,
-      migrating ? section.schemaVersion : 3
+      migrating ? section.schemaVersion : 4
     );
     result = result.slice(0, section.start) + rendered + result.slice(section.end);
   }
@@ -7913,13 +8022,16 @@ function renderWindowSectionPreserving(sectionSource, recipe, sourceVersion) {
   const bounds = managedBounds(lines, sourceVersion);
   if (!bounds) return renderWindowSection(recipe);
   const prefix = lines.slice(1, bounds.settingsHeading).join("\n").trim();
-  const between = lines.slice(bounds.settingsTable.end, bounds.contentsHeading).join("\n").trim();
+  const nextManagedHeading = bounds.contentsHeading >= 0 ? bounds.contentsHeading : bounds.readonlyHeading >= 0 ? bounds.readonlyHeading : bounds.managedEnd;
+  const between = lines.slice(bounds.settingsTable.end, nextManagedHeading).join("\n").trim();
   const tail = lines.slice(bounds.managedEnd).join("\n").trim();
   const rendered = renderWindowSection(recipe).trimEnd().split("\n");
   const settingsHeading = rendered.findIndex((line) => line === "### \u53EF\u7F16\u8F91\u8BBE\u7F6E");
   const contentsHeading = rendered.findIndex((line) => line === "### \u6253\u5F00\u5185\u5BB9");
+  const readonlyHeading = rendered.findIndex((line) => line === "### \u53EA\u8BFB\u4FE1\u606F");
   const output = [...rendered];
-  if (between) output.splice(contentsHeading, 0, "", between, "");
+  const firstManagedHeading = contentsHeading >= 0 ? contentsHeading : readonlyHeading;
+  if (between && firstManagedHeading >= 0) output.splice(firstManagedHeading, 0, "", between, "");
   if (prefix) output.splice(settingsHeading, 0, "", prefix, "");
   if (tail) output.push("", tail);
   return `${output.join("\n").replace(/\n{3,}/g, "\n\n")}
@@ -7931,13 +8043,14 @@ function managedBounds(lines, version) {
     lines,
     1,
     lines.length,
-    version === 3 ? /^###\s+可编辑设置\s*$/ : /^###\s+窗口设置\s*$/
+    version >= 3 ? /^###\s+可编辑设置\s*$/ : /^###\s+窗口设置\s*$/
   );
   const contentsHeading = findLine(lines, 1, lines.length, contentsPattern);
   const settingsTable = findTable(lines, settingsHeading, contentsHeading < 0 ? lines.length : contentsHeading);
   const contentsTable = contentsHeading < 0 ? null : findTable(lines, contentsHeading + 1, lines.length);
-  if (!settingsTable || contentsHeading < 0 || !contentsTable) return null;
-  const readonlyHeading = version === 3 ? findLine(lines, contentsTable.end, lines.length, /^###\s+只读信息\s*$/) : -1;
+  if (!settingsTable || version < 4 && (contentsHeading < 0 || !contentsTable)) return null;
+  const readonlyStart = contentsTable?.end ?? settingsTable.end;
+  const readonlyHeading = version >= 3 ? findLine(lines, readonlyStart, lines.length, /^###\s+只读信息\s*$/) : -1;
   const readonlyTable = readonlyHeading < 0 ? null : findTable(lines, readonlyHeading + 1, lines.length);
   const detailsEnd = readonlyHeading < 0 ? -1 : findLine(lines, readonlyHeading + 1, lines.length, /^<\/details>\s*$/);
   return {
@@ -7947,7 +8060,7 @@ function managedBounds(lines, version) {
     contentsTable,
     readonlyHeading,
     readonlyTable,
-    managedEnd: detailsEnd >= 0 ? detailsEnd + 1 : readonlyTable?.end ?? contentsTable.end
+    managedEnd: detailsEnd >= 0 ? detailsEnd + 1 : readonlyTable?.end ?? contentsTable?.end ?? settingsTable.end
   };
 }
 function parseWindowSection(lines, section, options) {
@@ -7988,7 +8101,9 @@ function parseWindowSection(lines, section, options) {
   const monitorRaw = section.schemaVersion === 1 ? fields.get("monitor") ?? "" : fields.get("\u5C4F\u5E55") ?? "";
   const spaceRaw = section.schemaVersion === 1 ? fields.get("space") ?? "" : fields.get("Space") ?? "";
   const layout = section.schemaVersion === 1 ? fields.get("layout") ?? "" : fields.get("\u5E03\u5C40") ?? "";
+  const restoreModeRaw = section.schemaVersion === 4 ? fields.get("\u6062\u590D\u65B9\u5F0F") ?? "" : "open-content";
   const openMode = OPEN_MODE_VALUES[openModeRaw] ?? openModeRaw;
+  const restoreMode = RESTORE_MODE_VALUES[restoreModeRaw] ?? restoreModeRaw;
   const monitor = MONITOR_VALUES[monitorRaw] ?? monitorRaw;
   const space = spaceRaw === "\u5F53\u524D" ? "current" : spaceRaw;
   const requiredValues = [
@@ -8000,7 +8115,8 @@ function parseWindowSection(lines, section, options) {
     ["\u6253\u5F00\u65B9\u5F0F", openMode],
     ["\u5C4F\u5E55", monitor],
     ["Space", space],
-    ["\u5E03\u5C40", layout]
+    ["\u5E03\u5C40", layout],
+    ...section.schemaVersion === 4 ? [["\u6062\u590D\u65B9\u5F0F", restoreMode]] : []
   ];
   for (const [field, value] of requiredValues) {
     if (!value) diagnostics.push(error("MISSING_FIELD", `\u7F3A\u5C11\u5B57\u6BB5 ${field}\u3002`, section.headingLine + 1, section.name, field));
@@ -8019,6 +8135,9 @@ function parseWindowSection(lines, section, options) {
   } else if (ADAPTERS.has(adapter) && !ADAPTER_MODES[adapter].has(openMode)) {
     diagnostics.push(error("OPEN_MODE_APP", `${adapter} \u4E0D\u652F\u6301 ${openMode}\u3002`, section.headingLine + 1, section.name, "\u6253\u5F00\u65B9\u5F0F"));
   }
+  if (!RESTORE_MODES.has(restoreMode)) {
+    diagnostics.push(error("RESTORE_MODE_ENUM", `\u4E0D\u652F\u6301\u7684\u6062\u590D\u65B9\u5F0F\uFF1A${restoreMode || "\uFF08\u7A7A\uFF09"}`, section.headingLine + 1, section.name, "\u6062\u590D\u65B9\u5F0F"));
+  }
   if (!MONITORS.has(monitor)) {
     diagnostics.push(error("MONITOR_ENUM", `\u4E0D\u652F\u6301\u7684\u5C4F\u5E55\uFF1A${monitor || "\uFF08\u7A7A\uFF09"}`, section.headingLine + 1, section.name, "\u5C4F\u5E55"));
   }
@@ -8034,7 +8153,7 @@ function parseWindowSection(lines, section, options) {
   const layoutError = validateLayout(layout);
   if (layoutError) diagnostics.push(error("LAYOUT_INVALID", layoutError, section.headingLine + 1, section.name, "\u5E03\u5C40"));
   const contents = [];
-  for (const row of bounds.contentsTable.rows) {
+  for (const row of bounds.contentsTable?.rows ?? []) {
     if (row.length < 5) continue;
     if (section.schemaVersion === 1) {
       const content = legacyContentValue(row);
@@ -8056,7 +8175,7 @@ function parseWindowSection(lines, section, options) {
       });
     }
   }
-  validateContents(contents, diagnostics, section, options);
+  validateContents(contents, restoreMode, diagnostics, section, options);
   if (diagnostics.some((item) => item.severity === "error")) return { recipe: null, diagnostics };
   return {
     recipe: {
@@ -8071,12 +8190,19 @@ function parseWindowSection(lines, section, options) {
       monitor,
       space,
       layout,
+      restoreMode,
       contents
     },
     diagnostics
   };
 }
-function validateContents(contents, diagnostics, section, options) {
+function validateContents(contents, restoreMode, diagnostics, section, options) {
+  if (restoreMode === "launch-only") {
+    if (contents.length > 0) {
+      diagnostics.push(error("LAUNCH_ONLY_CONTENTS", "\u4EC5\u542F\u52A8\u5E94\u7528\u65F6\u4E0D\u80FD\u5305\u542B\u201C\u6253\u5F00\u5185\u5BB9\u201D\u3002", section.headingLine + 1, section.name, "\u6062\u590D\u65B9\u5F0F"));
+    }
+    return;
+  }
   if (contents.length === 0) {
     diagnostics.push(error("CONTENTS_EMPTY", "\u6253\u5F00\u5185\u5BB9\u81F3\u5C11\u9700\u8981\u4E00\u884C\u3002", section.headingLine + 1, section.name));
     return;
@@ -8136,7 +8262,7 @@ function findWindowSections(lines, schemaVersion) {
         break;
       }
     }
-    const version = legacy ? 1 : schemaVersion === 3 ? 3 : 2;
+    const version = legacy ? 1 : schemaVersion >= 3 ? schemaVersion : 2;
     if (version !== 1 && findLine(lines, index + 1, endLine, /^###\s+(窗口设置|可编辑设置)\s*$/) < 0) continue;
     sections.push({
       start: offsets[index] ?? 0,
@@ -8149,14 +8275,14 @@ function findWindowSections(lines, schemaVersion) {
       recipe: null
     });
   }
-  if (schemaVersion === 1 || schemaVersion === 2 || schemaVersion === 3) return sections;
+  if (schemaVersion >= 1 && schemaVersion <= 4) return sections;
   return sections;
 }
 function settingValue(row, version) {
-  if (version === 3 && row.length > 3) {
+  if (version >= 3 && row.length > 3) {
     return stripCode(row.slice(1, -1).join(" | ")).trim();
   }
-  if (version === 3) return stripCode(row[1] ?? "").trim();
+  if (version >= 3) return stripCode(row[1] ?? "").trim();
   return stripCode(row.slice(1).join(" | ")).trim();
 }
 function legacyContentValue(row) {
@@ -8711,37 +8837,24 @@ var CaptureModal = class extends import_obsidian.Modal {
   summaryEl = null;
   sourceNoticesEl = null;
   candidatesEl = null;
-  scannedAtEl = null;
   refreshButton = null;
   refreshing = false;
-  candidateToggles = /* @__PURE__ */ new Map();
   candidateRows = /* @__PURE__ */ new Map();
-  candidateIntentLabels = /* @__PURE__ */ new Map();
   onOpen() {
     prepareModal(this, "wide");
     this.titleEl.setText("\u6536\u5F55\u5F53\u524D Workspace");
-    createModalIntro(
-      this.contentEl,
-      "\u9009\u62E9\u7A97\u53E3",
-      "\u6D4F\u89C8\u5668\u9ED8\u8BA4\u6536\u5F55\u6574\u4E2A\u7A97\u53E3\uFF1B\u53EA\u5728\u9700\u8981\u6392\u9664\u9875\u9762\u65F6\u5C55\u5F00\u6807\u7B7E\u9875\u3002",
-      "scan-line"
-    );
     const toolbar = this.contentEl.createDiv({ cls: "workspace-bookmark-capture-toolbar" });
-    const captureStatus = toolbar.createDiv({ cls: "workspace-bookmark-capture-status" });
-    this.summaryEl = captureStatus.createDiv({ cls: "workspace-bookmark-capture-summary" });
-    this.scannedAtEl = captureStatus.createEl("small", {
-      cls: "workspace-bookmark-capture-time"
-    });
-    this.updateScannedAt(this.options.scannedAt);
+    this.summaryEl = toolbar.createDiv({ cls: "workspace-bookmark-capture-summary" });
     const quickActions = toolbar.createDiv({ cls: "workspace-bookmark-quick-actions" });
-    if (this.options.onRefresh) {
-      this.refreshButton = new import_obsidian.ButtonComponent(quickActions).setButtonText("\u5237\u65B0\u7A97\u53E3").setIcon("refresh-cw").onClick(() => void this.refreshCandidates());
-    }
-    new import_obsidian.ButtonComponent(quickActions).setButtonText("\u5168\u9009").onClick(() => this.setAllCandidates(true));
-    new import_obsidian.ButtonComponent(quickActions).setButtonText("\u6E05\u9664").onClick(() => this.setAllCandidates(false));
-    this.sourceNoticesEl = this.contentEl.createDiv({
-      cls: "workspace-bookmark-capture-source-notices"
+    this.sourceNoticesEl = quickActions.createDiv({
+      cls: "workspace-bookmark-capture-bridge-icons"
     });
+    if (this.options.onRefresh) {
+      this.refreshButton = new import_obsidian.ButtonComponent(quickActions).setIcon("refresh-cw").setTooltip("\u5237\u65B0\u5F53\u524D\u53EF\u89C1\u7A97\u53E3").onClick(() => void this.refreshCandidates());
+    }
+    this.updateScannedAt(this.options.scannedAt);
+    new import_obsidian.ButtonComponent(quickActions).setIcon("check-check").setTooltip("\u5168\u90E8\u6536\u5F55").onClick(() => this.setAllCandidates(true));
+    new import_obsidian.ButtonComponent(quickActions).setIcon("circle-off").setTooltip("\u5168\u90E8\u5FFD\u7565").onClick(() => this.setAllCandidates(false));
     this.candidatesEl = this.contentEl.createDiv({
       cls: "workspace-bookmark-capture-candidates"
     });
@@ -8765,7 +8878,7 @@ var CaptureModal = class extends import_obsidian.Modal {
           (candidate) => candidate.selected && candidate.action !== "ignore" && candidateToRecipe(candidate) == null
         );
         if (firstInvalid) {
-          this.revealCaptureIssue(firstInvalid, "\u6240\u9009\u7A97\u53E3\u7F3A\u5C11\u53EF\u6062\u590D URL \u6216\u6807\u7B7E\u9875\u3002");
+          this.revealCaptureIssue(firstInvalid, "\u8BF7\u5148\u6DFB\u52A0\u6062\u590D\u5185\u5BB9\uFF0C\u6216\u5207\u6362\u4E3A\u201C\u4EC5\u542F\u52A8\u5E94\u7528\u201D\u3002");
           return;
         }
         const operations = this.candidates.flatMap((candidate) => {
@@ -8791,7 +8904,7 @@ var CaptureModal = class extends import_obsidian.Modal {
             this.revealCaptureIssue(ambiguous, "\u8BF7\u5148\u89E3\u51B3\u6D4F\u89C8\u5668\u7A97\u53E3\u5339\u914D\u6B67\u4E49\u3002");
             return;
           }
-          new import_obsidian.Notice("\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u5177\u6709\u53EF\u6062\u590D URL \u7684\u7A97\u53E3\u3002");
+          new import_obsidian.Notice("\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u8981\u6536\u5F55\u7684\u7A97\u53E3\u3002");
           return;
         }
         await this.onSubmit(operations);
@@ -8802,9 +8915,7 @@ var CaptureModal = class extends import_obsidian.Modal {
   renderCandidates() {
     if (!this.candidatesEl) return;
     this.candidatesEl.empty();
-    this.candidateToggles.clear();
     this.candidateRows.clear();
-    this.candidateIntentLabels.clear();
     if (this.candidates.length === 0) {
       const empty = createEmptyState(
         this.candidatesEl,
@@ -8863,16 +8974,6 @@ var CaptureModal = class extends import_obsidian.Modal {
     row.toggleClass("is-selected", candidate.selected);
     const visibleAppName = candidate.browser?.browserName ?? candidate.browserNameHint ?? candidate.native.appName;
     const header = row.createDiv({ cls: "workspace-bookmark-window-row-header" });
-    const selection = header.createEl("input", {
-      type: "checkbox",
-      cls: "workspace-bookmark-window-select",
-      attr: {
-        "aria-label": `\u9009\u62E9 ${visibleAppName} ${candidate.native.title || "\u65E0\u6807\u9898"}`
-      }
-    });
-    selection.checked = candidate.selected;
-    selection.disabled = !candidate.browser && Boolean(candidate.browserAlternatives?.length) || (candidate.duplicateTargetIds?.length ?? 0) > 1;
-    this.candidateToggles.set(candidate, selection);
     const identity = header.createDiv({ cls: "workspace-bookmark-window-identity" });
     const icon = identity.createSpan({ cls: "workspace-bookmark-window-icon" });
     (0, import_obsidian.setIcon)(
@@ -8893,39 +8994,35 @@ var CaptureModal = class extends import_obsidian.Modal {
       cls: "workspace-bookmark-window-secondary"
     });
     const intent = header.createDiv({ cls: "workspace-bookmark-window-intent" });
-    const intentLabel = intent.createSpan({ cls: "workspace-bookmark-intent-label" });
-    this.candidateIntentLabels.set(candidate, intentLabel);
-    this.updateCandidateIntent(candidate);
-    const more = intent.createEl("button", {
-      cls: "clickable-icon workspace-bookmark-icon-action",
-      attr: { "aria-label": "\u66F4\u6539\u5199\u5165\u65B9\u5F0F", type: "button" }
+    const canSelect = !(!candidate.browser && Boolean(candidate.browserAlternatives?.length)) && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
+    const ignoreButton = intent.createEl("button", {
+      text: "\u5FFD\u7565",
+      cls: "workspace-bookmark-capture-choice",
+      attr: { type: "button", "aria-pressed": String(!candidate.selected) }
     });
-    more.title = "\u66F4\u6539\u5199\u5165\u65B9\u5F0F";
-    (0, import_obsidian.setIcon)(more, "more-horizontal");
-    more.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const menu = new import_obsidian.Menu();
-      menu.addItem(
-        (item) => item.setTitle("\u65B0\u589E Window").setChecked(candidate.action === "add").onClick(() => {
-          candidate.action = "add";
-          candidate.targetId = void 0;
-          this.setCandidateSelected(candidate, true);
-        })
-      );
-      for (const existing of this.existing) {
-        menu.addItem(
-          (item) => item.setTitle(`\u66F4\u65B0\uFF1A${existing.name}`).setChecked(
-            candidate.action === "update" && candidate.targetId === existing.id
-          ).onClick(() => {
-            candidate.action = "update";
-            candidate.targetId = existing.id;
-            this.setCandidateSelected(candidate, true);
-          })
-        );
-      }
-      menu.showAtMouseEvent(event);
+    const writeLabel = candidate.targetId ? "\u66F4\u65B0" : "\u65B0\u589E";
+    const writeButton = intent.createEl("button", {
+      text: writeLabel,
+      cls: "workspace-bookmark-capture-choice",
+      attr: { type: "button", "aria-pressed": String(candidate.selected) }
     });
+    const applySelection = (selected) => {
+      candidate.selected = selected;
+      candidate.action = selected ? candidate.targetId ? "update" : "add" : "ignore";
+      row.toggleClass("is-selected", selected);
+      ignoreButton.toggleClass("is-active", !selected);
+      writeButton.toggleClass("is-active", selected);
+      ignoreButton.setAttribute("aria-pressed", String(!selected));
+      writeButton.setAttribute("aria-pressed", String(selected));
+      manualContainer.toggleClass("is-visible", selected);
+      this.updateCaptureSummary();
+    };
+    ignoreButton.toggleClass("is-active", !candidate.selected);
+    writeButton.toggleClass("is-active", candidate.selected);
+    ignoreButton.disabled = !canSelect;
+    writeButton.disabled = !canSelect;
+    ignoreButton.addEventListener("click", () => applySelection(false));
+    writeButton.addEventListener("click", () => applySelection(true));
     const manualContainer = row.createDiv({ cls: "workspace-bookmark-manual-url" });
     if ((candidate.duplicateTargetIds?.length ?? 0) > 1) {
       const warning2 = row.createDiv({ cls: "workspace-bookmark-capture-inline-warning" });
@@ -8941,18 +9038,8 @@ var CaptureModal = class extends import_obsidian.Modal {
         });
       }
     }
-    const updateSelection = (value) => {
-      candidate.selected = value;
-      candidate.action = value ? candidate.targetId ? "update" : "add" : "ignore";
-      selection.checked = value;
-      row.toggleClass("is-selected", value);
-      manualContainer.toggleClass("is-visible", value);
-      this.updateCandidateIntent(candidate);
-      this.updateCaptureSummary();
-    };
-    selection.addEventListener("change", () => updateSelection(selection.checked));
     identity.addEventListener("click", () => {
-      if (!selection.disabled) updateSelection(!candidate.selected);
+      if (canSelect) applySelection(!candidate.selected);
     });
     const tabs = row.createEl("details", { cls: "workspace-bookmark-capture-tabs" });
     tabs.open = candidate.tabsExpanded ?? false;
@@ -8965,11 +9052,11 @@ var CaptureModal = class extends import_obsidian.Modal {
       const tabsHeading = tabs.createEl("summary", {
         cls: "workspace-bookmark-tabs-heading"
       });
-      tabsHeading.createSpan({ text: "\u81EA\u5B9A\u4E49\u6807\u7B7E\u9875" });
+      tabsHeading.createSpan({ text: "\u6807\u7B7E\u9875" });
       const tabSummary = tabsHeading.createEl("small", {
         text: `${candidate.selectedTabs.size}/${candidate.browser.tabs.length}`
       });
-      const tabActions = tabs.createDiv({ cls: "workspace-bookmark-tab-actions" });
+      const tabActions = tabsHeading.createDiv({ cls: "workspace-bookmark-tab-actions" });
       const selectTabs = (mode) => {
         candidate.selectedTabs.clear();
         for (const tab of candidate.browser?.tabs ?? []) {
@@ -8980,8 +9067,16 @@ var CaptureModal = class extends import_obsidian.Modal {
         renderTabs();
         this.updateCaptureSummary();
       };
-      new import_obsidian.ButtonComponent(tabActions).setButtonText("\u5168\u90E8").onClick(() => selectTabs("all"));
-      new import_obsidian.ButtonComponent(tabActions).setButtonText("\u4EC5\u5F53\u524D").onClick(() => selectTabs("active"));
+      new import_obsidian.ButtonComponent(tabActions).setButtonText("\u5168\u90E8").onClick((event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        selectTabs("all");
+      });
+      new import_obsidian.ButtonComponent(tabActions).setButtonText("\u4EC5\u5F53\u524D").onClick((event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        selectTabs("active");
+      });
       for (const tab of candidate.browser.tabs) {
         const tabRow = new import_obsidian.Setting(tabs).setName(tab.title || tab.url).setDesc(compactUrl(tab.url)).addToggle(
           (toggle) => toggle.setValue(candidate.selectedTabs.has(tab.index)).setDisabled(!isRestorableBrowserUrl(tab.url)).onChange((value) => {
@@ -9019,26 +9114,51 @@ var CaptureModal = class extends import_obsidian.Modal {
           candidate.selected = Boolean(candidate.browser);
           candidate.action = candidate.selected ? "add" : "ignore";
           candidate.targetId = void 0;
-          selection.disabled = !candidate.browser;
-          selection.checked = candidate.selected;
+          candidate.restoreMode = "open-content";
           candidate.selectedTabs = new Set(
             candidate.browser?.tabs.filter((tab) => isRestorableBrowserUrl(tab.url)).map((tab) => tab.index) ?? []
           );
-          row.toggleClass("is-selected", candidate.selected);
-          renderTabs();
-          this.updateCandidateIntent(candidate);
+          this.renderCandidates();
           this.updateCaptureSummary();
         });
       });
     }
     renderTabs();
-    if (!candidate.browser && !candidate.browserAlternatives?.length && !candidate.obsidianUrl) {
-      new import_obsidian.Setting(manualContainer).setName("\u6062\u590D URL").setDesc("\u6B64 App \u65E0\u9002\u914D\u5668\uFF0C\u8BF7\u7C98\u8D34 URL Scheme\u3002").addText(
-        (input) => input.setPlaceholder("scheme://...").setValue(candidate.manualUrl).onChange((value) => {
-          candidate.manualUrl = value.trim();
-          this.updateCaptureSummary();
-        })
-      );
+    if (!candidate.obsidianUrl && !candidate.browser && !candidate.browserAlternatives?.length) {
+      const restoreControls = manualContainer.createDiv({
+        cls: "workspace-bookmark-capture-restore-controls"
+      });
+      const launchOnly = restoreControls.createEl("button", {
+        text: "\u4EC5\u542F\u52A8\u5E94\u7528",
+        cls: "workspace-bookmark-capture-link",
+        attr: { type: "button", "aria-pressed": String(candidate.restoreMode === "launch-only") }
+      });
+      const addUrl = restoreControls.createEl("button", {
+        text: "\u6DFB\u52A0\u6062\u590D URL",
+        cls: "workspace-bookmark-capture-link",
+        attr: { type: "button", "aria-pressed": String(candidate.restoreMode === "open-content") }
+      });
+      const input = manualContainer.createEl("input", {
+        cls: "workspace-bookmark-capture-url-input",
+        attr: { type: "url", placeholder: "scheme://..." }
+      });
+      input.value = candidate.manualUrl;
+      const updateRestoreMode = (mode) => {
+        candidate.restoreMode = mode;
+        launchOnly.toggleClass("is-active", mode === "launch-only");
+        addUrl.toggleClass("is-active", mode === "open-content");
+        launchOnly.setAttribute("aria-pressed", String(mode === "launch-only"));
+        addUrl.setAttribute("aria-pressed", String(mode === "open-content"));
+        input.toggleClass("is-visible", mode === "open-content");
+        this.updateCaptureSummary();
+      };
+      launchOnly.addEventListener("click", () => updateRestoreMode("launch-only"));
+      addUrl.addEventListener("click", () => updateRestoreMode("open-content"));
+      input.addEventListener("input", () => {
+        candidate.manualUrl = input.value.trim();
+        this.updateCaptureSummary();
+      });
+      updateRestoreMode(candidate.restoreMode ?? "launch-only");
     }
     manualContainer.toggleClass("is-visible", candidate.selected);
   }
@@ -9046,7 +9166,7 @@ var CaptureModal = class extends import_obsidian.Modal {
     if (this.refreshing || !this.options.onRefresh) return;
     this.refreshing = true;
     this.refreshButton?.setDisabled(true);
-    this.refreshButton?.setButtonText("\u6B63\u5728\u5237\u65B0\u2026");
+    this.refreshButton?.setIcon("loader-circle");
     try {
       const next = await this.options.onRefresh();
       const reconciled = reconcileCaptureSnapshot(this.candidates, next);
@@ -9068,70 +9188,43 @@ var CaptureModal = class extends import_obsidian.Modal {
     } finally {
       this.refreshing = false;
       this.refreshButton?.setDisabled(false);
-      this.refreshButton?.setButtonText("\u5237\u65B0\u7A97\u53E3");
+      this.refreshButton?.setIcon("refresh-cw");
     }
   }
   renderSourceNotices(notices) {
     if (!this.sourceNoticesEl) return;
     this.sourceNoticesEl.empty();
     for (const notice of notices) {
-      const row = this.sourceNoticesEl.createDiv({
-        cls: `workspace-bookmark-capture-source-notice is-${notice.tone}`
+      const row = this.sourceNoticesEl.createEl("button", {
+        cls: `clickable-icon workspace-bookmark-capture-source-icon is-${notice.tone}`,
+        attr: { type: "button", "aria-label": notice.message }
       });
-      const icon = row.createSpan();
-      (0, import_obsidian.setIcon)(icon, notice.tone === "warning" ? "wifi-off" : "info");
-      row.createSpan({ text: notice.message });
+      row.title = notice.message;
+      (0, import_obsidian.setIcon)(row, notice.tone === "warning" ? "wifi-off" : "circle-alert");
+      row.addEventListener("click", () => void this.options.onDiagnostics?.());
     }
   }
   updateScannedAt(value) {
-    if (!this.scannedAtEl) return;
-    if (!value) {
-      this.scannedAtEl.setText("");
-      return;
-    }
+    if (!this.refreshButton) return;
+    if (!value) return;
     const date = new Date(value);
-    this.scannedAtEl.setText(
-      Number.isNaN(date.getTime()) ? "" : `\u4E0A\u6B21\u626B\u63CF ${date.toLocaleTimeString("zh-CN", {
+    if (Number.isNaN(date.getTime())) return;
+    this.refreshButton.setTooltip(
+      `\u5237\u65B0\u5F53\u524D\u53EF\u89C1\u7A97\u53E3\uFF08\u4E0A\u6B21\u626B\u63CF ${date.toLocaleTimeString("zh-CN", {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit"
-      })}`
+      })}\uFF09`
     );
   }
   setAllCandidates(selected) {
     for (const candidate of this.candidates) {
-      const canRestore = Boolean(
-        candidate.browser || candidate.obsidianUrl || candidate.manualUrl
-      ) && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
-      candidate.selected = selected && canRestore;
+      const canSelect = !(!candidate.browser && Boolean(candidate.browserAlternatives?.length)) && (candidate.duplicateTargetIds?.length ?? 0) <= 1;
+      candidate.selected = selected && canSelect;
       candidate.action = candidate.selected ? candidate.targetId ? "update" : "add" : "ignore";
-      const toggle = this.candidateToggles.get(candidate);
-      if (toggle) toggle.checked = candidate.selected;
-      const row = this.candidateRows.get(candidate);
-      row?.classList.toggle("is-selected", candidate.selected);
-      row?.querySelector(".workspace-bookmark-manual-url")?.classList.toggle("is-visible", candidate.selected);
-      this.updateCandidateIntent(candidate);
     }
+    this.renderCandidates();
     this.updateCaptureSummary();
-  }
-  setCandidateSelected(candidate, selected) {
-    candidate.selected = selected;
-    const toggle = this.candidateToggles.get(candidate);
-    if (toggle) toggle.checked = selected;
-    const row = this.candidateRows.get(candidate);
-    row?.classList.toggle("is-selected", selected);
-    row?.querySelector(".workspace-bookmark-manual-url")?.classList.toggle("is-visible", selected);
-    this.updateCandidateIntent(candidate);
-    this.updateCaptureSummary();
-  }
-  updateCandidateIntent(candidate) {
-    const label = this.candidateIntentLabels.get(candidate);
-    if (!label) return;
-    const updating = candidate.action === "update" && Boolean(candidate.targetId);
-    label.setText(
-      candidate.action === "ignore" || !candidate.selected ? "\u5FFD\u7565" : updating ? "\u66F4\u65B0" : "\u65B0\u589E"
-    );
-    label.toggleClass("is-update", updating);
   }
   revealCaptureIssue(candidate, message) {
     const row = this.candidateRows.get(candidate);
@@ -9149,13 +9242,8 @@ var CaptureModal = class extends import_obsidian.Modal {
       (total, candidate) => total + candidate.selectedTabs.size,
       0
     );
-    const needsUrl = selected.filter(
-      (candidate) => !candidate.browser && !candidate.obsidianUrl && !candidate.manualUrl
-    ).length;
-    this.summaryEl.setText(
-      `\u5DF2\u9009 ${selected.length} \u4E2A\u7A97\u53E3 \xB7 ${selectedTabs} \u4E2A\u9875\u9762${needsUrl > 0 ? ` \xB7 ${needsUrl} \u4E2A\u5F85\u8865 URL` : ""}`
-    );
-    this.summaryEl.toggleClass("is-warning", needsUrl > 0);
+    const launchOnly = selected.filter((candidate) => candidate.restoreMode === "launch-only").length;
+    this.summaryEl.setText(`\u5DF2\u9009 ${selected.length} \xB7 ${selectedTabs} \u4E2A\u9875\u9762${launchOnly ? ` \xB7 ${launchOnly} \u4E2A\u4EC5\u542F\u52A8` : ""}`);
   }
 };
 var CaptureDiffModal = class extends import_obsidian.Modal {
@@ -9209,8 +9297,8 @@ var MigrationPreviewModal = class extends import_obsidian.Modal {
     this.titleEl.setText("\u5347\u7EA7 Workspace Markdown");
     createModalIntro(
       this.contentEl,
-      "\u9700\u8981\u5148\u8FC1\u79FB\u5230 V3",
-      "Capture \u53EA\u4F1A\u5411 V3 \u6587\u6863\u5199\u5165\u3002\u8FC1\u79FB\u4F1A\u6539\u7528 APP \u6807\u9898\u3001\u53EF\u7F16\u8F91\u8BBE\u7F6E\u548C\u6298\u53E0\u53EA\u8BFB\u4FE1\u606F\uFF0C\u666E\u901A\u6B63\u6587\u4E0E\u81EA\u5B9A\u4E49 frontmatter \u4FDD\u6301\u4E0D\u53D8\u3002",
+      "\u9700\u8981\u5148\u8FC1\u79FB\u5230 V4",
+      "Capture \u53EA\u4F1A\u5411 V4 \u6587\u6863\u5199\u5165\u3002\u8FC1\u79FB\u4F1A\u4FDD\u7559 APP \u6807\u9898\u3001\u53EF\u7F16\u8F91\u8BBE\u7F6E\u3001\u6298\u53E0\u53EA\u8BFB\u4FE1\u606F\u3001\u666E\u901A\u6B63\u6587\u4E0E\u81EA\u5B9A\u4E49 frontmatter\u3002",
       "file-up",
       "warning"
     );
@@ -9322,6 +9410,26 @@ var WindowEditorModal = class extends import_obsidian.Modal {
       this.draft.name,
       (value) => this.draft.name = value
     );
+    let updateContentsVisibility = null;
+    new import_obsidian.Setting(general).setName("\u6062\u590D\u65B9\u5F0F").setDesc("\u4EC5\u542F\u52A8\u5E94\u7528\u65F6\u4E0D\u9700\u8981 URL \u6216\u6807\u7B7E\u9875\u3002").addDropdown((dropdown) => {
+      dropdown.addOption("open-content", "\u6062\u590D\u9875\u9762\u6216\u6587\u6863").addOption("launch-only", "\u4EC5\u542F\u52A8\u5E94\u7528").setValue(this.draft.restoreMode ?? "open-content").onChange((value) => {
+        this.draft.restoreMode = value;
+        if (this.draft.restoreMode === "launch-only") {
+          this.draft.contents = [];
+        } else if (this.draft.contents.length === 0) {
+          this.draft.contents = [{
+            order: 1,
+            title: "",
+            url: "https://",
+            active: true,
+            pinned: false
+          }];
+        }
+        updateContentsVisibility?.();
+        this.renderContents();
+        this.updateError();
+      });
+    });
     let modeDropdown = null;
     new import_obsidian.Setting(general).setName("\u6253\u5F00\u65B9\u5F0F").setDesc("\u4F18\u5148\u805A\u7126\u3001\u590D\u7528\u6216\u521B\u5EFA\u7A97\u53E3\u3002").addDropdown((dropdown) => {
       modeDropdown = dropdown;
@@ -9395,6 +9503,10 @@ var WindowEditorModal = class extends import_obsidian.Modal {
     this.contentsContainer = contentsSection.createDiv({
       cls: "workspace-bookmark-contents-list"
     });
+    updateContentsVisibility = () => {
+      contentsSection.toggleClass("is-hidden", this.draft.restoreMode === "launch-only");
+    };
+    updateContentsVisibility();
     this.renderContents();
     const advanced = form.createEl("details", {
       cls: "workspace-bookmark-advanced-settings"
@@ -9759,6 +9871,10 @@ function validateDraft(recipe) {
   }
   const layoutError = validateLayout(recipe.layout);
   if (layoutError) return layoutError;
+  const restoreMode = recipe.restoreMode ?? "open-content";
+  if (restoreMode === "launch-only") {
+    return recipe.contents.length === 0 ? null : "\u4EC5\u542F\u52A8\u5E94\u7528\u65F6\u4E0D\u80FD\u5305\u542B\u6253\u5F00\u5185\u5BB9\u3002";
+  }
   if (recipe.contents.length === 0) return "Contents \u81F3\u5C11\u9700\u8981\u4E00\u9879\u3002";
   if (recipe.contents.filter((item) => item.active).length > 1) return "\u6700\u591A\u53EA\u80FD\u6709\u4E00\u9879\u6FC0\u6D3B\u3002";
   if (recipe.contents.some((item) => !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(item.url))) {
@@ -9784,92 +9900,6 @@ function configureModeDropdown(dropdown, recipe) {
   };
   for (const mode of modesForAdapter(recipe.adapter)) dropdown.addOption(mode, labels[mode]);
   dropdown.setValue(recipe.openMode);
-}
-function candidateToRecipe(candidate) {
-  let adapter = "manual";
-  let appName = candidate.native.appName;
-  let bundleId = candidate.native.bundleId;
-  let browserId;
-  let contents = [];
-  if (candidate.browser) {
-    adapter = "browser";
-    appName = candidate.browser.browserName;
-    bundleId = candidate.browser.browserBundleId;
-    browserId = candidate.browser.browserId;
-    contents = candidate.browser.tabs.filter((tab) => candidate.selectedTabs.has(tab.index)).map(tabToContent);
-  } else if (candidate.obsidianUrl) {
-    adapter = "obsidian";
-    appName = "Obsidian";
-    bundleId = "md.obsidian";
-    contents = [
-      {
-        order: 1,
-        title: candidate.native.title,
-        url: candidate.obsidianUrl,
-        active: true,
-        pinned: false
-      }
-    ];
-  } else if (candidate.manualUrl) {
-    contents = [
-      {
-        order: 1,
-        title: candidate.native.title,
-        url: candidate.manualUrl,
-        active: true,
-        pinned: false
-      }
-    ];
-  }
-  if (contents.length === 0) return null;
-  if (!contents.some((item) => item.active)) contents[0].active = true;
-  const contentTitle = contents.find((item) => item.active)?.title || contents[0]?.title || candidate.native.title;
-  return {
-    id: createWindowId(),
-    name: contentTitle || candidate.native.appName,
-    adapter,
-    appName,
-    bundleId,
-    ...browserId ? { browserId } : {},
-    titleHint: contentTitle,
-    openMode: adapter === "manual" ? "app-default" : "focus-existing",
-    monitor: candidate.native.monitor,
-    space: "current",
-    layout: frameToLayout(candidate.native.normalizedFrame),
-    contents
-  };
-}
-function tabToContent(tab) {
-  return {
-    order: tab.index + 1,
-    title: tab.title,
-    url: tab.url,
-    active: tab.active,
-    pinned: tab.pinned
-  };
-}
-function frameToLayout(frame) {
-  const epsilon = 0.035;
-  const close = (left, right) => Math.abs(left - right) <= epsilon;
-  if (close(frame.x, 0) && close(frame.y, 0) && close(frame.width, 1) && close(frame.height, 1)) {
-    return "full";
-  }
-  if (close(frame.x, 0) && close(frame.y, 0) && close(frame.height, 1)) {
-    return `left ${round(frame.width)}`;
-  }
-  if (close(frame.x + frame.width, 1) && close(frame.y, 0) && close(frame.height, 1)) {
-    return `right ${round(frame.width)}`;
-  }
-  if (close(frame.x, 0) && close(frame.y, 0) && close(frame.width, 1)) {
-    return `top ${round(frame.height)}`;
-  }
-  if (close(frame.x, 0) && close(frame.y + frame.height, 1) && close(frame.width, 1)) {
-    return `bottom ${round(frame.height)}`;
-  }
-  return `frame ${round(frame.x)} ${round(frame.y)} ${round(frame.width)} ${round(frame.height)}`;
-}
-function round(value) {
-  return Math.max(0, Math.min(1, Math.round(value * 1e3) / 1e3)).toString();
 }
 function prepareModal(modal, size) {
   modal.modalEl.addClass("workspace-bookmark-modal");
@@ -10134,6 +10164,7 @@ function describeRecipeChanges(previous, next) {
     ["Bundle ID", previous.bundleId, next.bundleId],
     ["Title hint", previous.titleHint, next.titleHint],
     ["Open mode", previous.openMode, next.openMode],
+    ["Restore mode", previous.restoreMode ?? "open-content", next.restoreMode ?? "open-content"],
     ["Monitor", previous.monitor, next.monitor],
     ["Layout", previous.layout, next.layout]
   ];
@@ -10326,7 +10357,7 @@ function partitionRestoreReadiness(windows, planItems, browserSources) {
       });
       continue;
     }
-    if (window2.adapter === "browser" && (!window2.browserId || browserConnection.get(window2.browserId) !== true)) {
+    if (window2.adapter === "browser" && (window2.restoreMode ?? "open-content") === "open-content" && (!window2.browserId || browserConnection.get(window2.browserId) !== true)) {
       const alternatives = [...browserConnection.entries()].filter(
         ([browserId, connected]) => connected && browserId !== window2.browserId
       ).map(([browserId]) => browserName(browserId));
@@ -10561,9 +10592,9 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       checkCallback: (checking) => this.managedCommand(checking, () => this.validateAndFormatCurrent())
     });
     this.addCommand({
-      id: "migrate-current-workspace-to-v3",
-      name: "Migrate current workspace to V3",
-      checkCallback: (checking) => this.managedCommand(checking, () => this.migrateCurrentWorkspaceToV3())
+      id: "migrate-current-workspace-to-v4",
+      name: "Migrate current workspace to V4",
+      checkCallback: (checking) => this.managedCommand(checking, () => this.migrateCurrentWorkspaceToV4())
     });
     this.addCommand({
       id: "review-duplicate-windows",
@@ -10701,7 +10732,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
     let source = await this.app.vault.read(file);
     let parsed = this.parse(source);
     if (!this.ensureExecutable(file, parsed)) return;
-    if (parsed.workspace && parsed.workspace.schemaVersion < 3) {
+    if (parsed.workspace && parsed.workspace.schemaVersion < 4) {
       const migrated = await this.migrateWorkspaceWithConfirmation(file, source);
       if (!migrated) return;
       source = migrated;
@@ -10784,6 +10815,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
           browser?.tabs.filter((tab) => isRestorableBrowserUrl(tab.url)).map((tab) => tab.index) ?? []
         ),
         manualUrl: "",
+        restoreMode: browser || isActiveObsidian ? "open-content" : "launch-only",
         action: browser || isActiveObsidian ? "add" : "ignore"
       };
       const captured = candidateToRecipe(candidate);
@@ -10841,14 +10873,14 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
     }
     new import_obsidian3.Notice(changed ? `\u5DF2\u5B89\u5168\u5199\u5165 ${operations.length} \u4E2A Window\u3002` : "\u6CA1\u6709\u9700\u8981\u5199\u5165\u7684\u53D8\u5316\u3002");
   }
-  async migrateCurrentWorkspaceToV3() {
+  async migrateCurrentWorkspaceToV4() {
     const file = this.getActiveManagedFile();
     if (!file) return;
     const source = await this.app.vault.read(file);
     const parsed = this.parse(source);
     if (!this.ensureExecutable(file, parsed)) return;
-    if (parsed.workspace?.schemaVersion === 3) {
-      new import_obsidian3.Notice("\u5F53\u524D Workspace \u5DF2\u7ECF\u662F V3\u3002");
+    if (parsed.workspace?.schemaVersion === 4) {
+      new import_obsidian3.Notice("\u5F53\u524D Workspace \u5DF2\u7ECF\u662F V4\u3002");
       return;
     }
     await this.migrateWorkspaceWithConfirmation(file, source);
@@ -10881,7 +10913,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       migration.headingChanges
     );
     new import_obsidian3.Notice(
-      `\u5DF2\u8FC1\u79FB\u5230 Workspace Markdown V3${externalReferences > 0 ? `\uFF1B\u53E6\u53D1\u73B0 ${externalReferences} \u4E2A\u53D7\u7BA1\u76EE\u5F55\u5916\u5F15\u7528\uFF0C\u672A\u81EA\u52A8\u4FEE\u6539` : ""}\u3002`,
+      `\u5DF2\u8FC1\u79FB\u5230 Workspace Markdown V4${externalReferences > 0 ? `\uFF1B\u53E6\u53D1\u73B0 ${externalReferences} \u4E2A\u53D7\u7BA1\u76EE\u5F55\u5916\u5F15\u7528\uFF0C\u672A\u81EA\u52A8\u4FEE\u6539` : ""}\u3002`,
       8e3
     );
     return migration.source;
@@ -11003,7 +11035,40 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       detail: `\u4E0E\u201C${kept.name}\u201D\u5B8C\u5168\u91CD\u590D\uFF0C\u672C\u6B21\u53EA\u6267\u884C\u7B2C\u4E00\u4EFD\u3002`,
       windowId: recipe.id
     }));
-    const planResult = await this.native.plan({ windows: deduplicated.runnable });
+    let supportedWindows = deduplicated.runnable;
+    const launchOnlyWindows = supportedWindows.filter(
+      (window2) => (window2.restoreMode ?? "open-content") === "launch-only"
+    );
+    if (launchOnlyWindows.length > 0) {
+      const doctor = await this.native.doctor();
+      if (!doctor.ok || !doctor.value?.capabilities?.includes("launch-only")) {
+        for (const window2 of launchOnlyWindows) {
+          items.push({
+            status: "skipped",
+            label: `${window2.appName} \xB7 ${window2.name}`,
+            detail: "\u5F53\u524D workspacectl \u4E0D\u652F\u6301\u201C\u4EC5\u542F\u52A8\u5E94\u7528\u201D\uFF1B\u8BF7\u66F4\u65B0\u539F\u751F\u63A7\u5236\u5668\u540E\u91CD\u8BD5\u3002",
+            windowId: window2.id
+          });
+        }
+        supportedWindows = supportedWindows.filter(
+          (window2) => (window2.restoreMode ?? "open-content") !== "launch-only"
+        );
+      }
+    }
+    if (supportedWindows.length === 0) {
+      const issues2 = [{
+        message: "\u5F53\u524D\u539F\u751F\u63A7\u5236\u5668\u4E0D\u652F\u6301\u6B64 Workspace \u6240\u9700\u7684\u201C\u4EC5\u542F\u52A8\u5E94\u7528\u201D\u80FD\u529B\u3002"
+      }];
+      new RestoreBlockedModal(this.app, workspace.name, issues2, {
+        onRetry: sourceFile ? async () => {
+          await this.openWorkspaceFile(sourceFile);
+        } : void 0,
+        onDiagnostics: () => this.showSystemDiagnostics(),
+        onEditWindow: sourceFile ? (windowId) => this.editWindowById(sourceFile, windowId) : void 0
+      }).open();
+      return { successCount: 0, items };
+    }
+    const planResult = await this.native.plan({ windows: supportedWindows });
     if (!planResult.ok || !planResult.value) {
       const failedItems = [
         ...items,
@@ -11018,8 +11083,9 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       }).open();
       return { successCount: 0, items: failedItems };
     }
-    const ensureResult = await this.native.ensureApps({ windows: deduplicated.runnable });
+    const ensureResult = await this.native.ensureApps({ windows: supportedWindows });
     const appBlockedBundles = /* @__PURE__ */ new Set();
+    const readyAppBundles = /* @__PURE__ */ new Set();
     if (!ensureResult.ok || !ensureResult.value) {
       items.push({
         status: "degraded",
@@ -11030,9 +11096,10 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       for (const item of ensureResult.value.items) {
         items.push(restoreItemForEnsuredApp(item));
         if (!item.ok) appBlockedBundles.add(item.bundleId);
+        if (item.ok) readyAppBundles.add(item.bundleId);
       }
     }
-    const appReadyWindows = deduplicated.runnable.filter(
+    const appReadyWindows = supportedWindows.filter(
       (window2) => !appBlockedBundles.has(window2.bundleId)
     );
     const browserStatus = await this.browserStatusAfterEnsure(appReadyWindows);
@@ -11047,7 +11114,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
     const runnable = readiness.runnable;
     const issues = [...readiness.issues];
     for (const issue of readiness.issues) {
-      const recipe = deduplicated.runnable.find(
+      const recipe = supportedWindows.find(
         (window2) => window2.id === issue.windowId
       );
       items.push({
@@ -11082,10 +11149,15 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
         detail: "Accessibility \u672A\u6388\u6743\uFF1B\u5185\u5BB9\u4F1A\u6253\u5F00\uFF0C\u4F46\u5E03\u5C40\u64CD\u4F5C\u5C06\u8DF3\u8FC7\u3002"
       });
     }
-    const obsidianWindows = runnable.filter((window2) => window2.adapter === "obsidian");
-    const browserWindows = runnable.filter((window2) => window2.adapter === "browser");
+    const contentWindows = runnable.filter(
+      (window2) => (window2.restoreMode ?? "open-content") === "open-content"
+    );
+    const obsidianWindows = contentWindows.filter((window2) => window2.adapter === "obsidian");
+    const browserWindows = contentWindows.filter((window2) => window2.adapter === "browser");
     const matchHints = {};
-    let successCount = 0;
+    let successCount = runnable.filter(
+      (window2) => (window2.restoreMode ?? "open-content") === "launch-only" && readyAppBundles.has(window2.bundleId)
+    ).length;
     for (const recipe of obsidianWindows) {
       for (const [index, content] of [...recipe.contents].sort((a, b) => a.order - b.order).entries()) {
         try {
@@ -11168,10 +11240,11 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       for (const arranged of arrange.value ?? []) {
         const recipe = runnable.find((window2) => window2.id === arranged.id);
         if (!arranged.ok) {
+          const isLaunchOnly = (recipe?.restoreMode ?? "open-content") === "launch-only";
           items.push({
             status: "degraded",
             label: `\u5E03\u5C40 \xB7 ${recipe?.name ?? arranged.id}`,
-            detail: arranged.message,
+            detail: isLaunchOnly && arranged.message === "No unambiguous matching window appeared." ? "\u5E94\u7528\u5DF2\u542F\u52A8\uFF0C\u4F46\u672A\u627E\u5230\u53EF\u5B89\u5168\u8C03\u6574\u5E03\u5C40\u7684\u5339\u914D\u7A97\u53E3\u3002" : arranged.message,
             windowId: recipe?.id
           });
         } else if (recipe?.adapter === "manual") {
@@ -11198,7 +11271,9 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
   }
   async browserStatusAfterEnsure(windows) {
     const needed = new Set(
-      windows.filter((window2) => window2.adapter === "browser" && window2.browserId).map((window2) => window2.browserId)
+      windows.filter(
+        (window2) => window2.adapter === "browser" && (window2.restoreMode ?? "open-content") === "open-content" && window2.browserId
+      ).map((window2) => window2.browserId)
     );
     if (needed.size === 0) return null;
     for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -11256,7 +11331,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       () => this.restoreWorkspace({
         id: parsed.workspace?.id ?? createWorkspaceId(),
         name: section.name,
-        schemaVersion: parsed.workspace?.schemaVersion ?? 3,
+        schemaVersion: parsed.workspace?.schemaVersion ?? 4,
         tags: [],
         windows: [section.recipe]
       }, file)
@@ -11277,7 +11352,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
     let source = await this.app.vault.read(file);
     let parsed = this.parse(source);
     if (!this.ensureExecutable(file, parsed)) return;
-    if (parsed.workspace && parsed.workspace.schemaVersion < 3) {
+    if (parsed.workspace && parsed.workspace.schemaVersion < 4) {
       const migrated = await this.migrateWorkspaceWithConfirmation(file, source);
       if (!migrated) return;
       source = migrated;
@@ -11331,7 +11406,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
     const source = await this.app.vault.read(file);
     const parsed = this.parse(source);
     if (!this.ensureExecutable(file, parsed)) return;
-    if (parsed.workspace && parsed.workspace.schemaVersion < 3) {
+    if (parsed.workspace && parsed.workspace.schemaVersion < 4) {
       await this.migrateWorkspaceWithConfirmation(file, source);
       return;
     }

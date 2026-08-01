@@ -13,6 +13,7 @@ It lets you create, capture, validate, edit, and open Workspace Markdown notes f
 - Captures visible current-Space windows through the local companion tools.
 - Writes readable Markdown sections such as `## Tabbit · Research`.
 - Keeps editable settings separate from folded read-only recovery metadata.
+- Supports **Restore content** and **Launch app only**: the latter starts an app without requiring a URL or browser tab.
 - Opens or restores Workspace contents from the current Workspace note.
 - Shows diagnostics when `workspacectl`, browser bridges, or Accessibility permission are unavailable.
 
@@ -58,7 +59,10 @@ npm install
 npm run typecheck
 npm test
 npm run build
+npm run deploy:local
 ```
+
+`npm run deploy:local` copies only `main.js`, `manifest.json`, and `styles.css` to the default local Vault. It never replaces the Vault's `data.json`. To use another Vault, run `npm run deploy:local -- --vault=/absolute/path/to/vault`.
 
 Release assets for BRAT are generated in the repository root:
 
@@ -85,6 +89,7 @@ Workspace Bookmark Peng 是一个 Obsidian 桌面端插件，用于把 macOS 工
 - 通过本地配套组件捕获当前 Space 中可见的窗口。
 - 写入更适合人类阅读的 Markdown，例如 `## Tabbit · Research`。
 - 将用户可编辑设置与折叠的只读恢复信息分开。
+- 支持“恢复页面或文档”和“仅启动应用”；后者无需 URL 或浏览器标签页。
 - 从当前 Workspace 文档打开或恢复对应内容。
 - 当 `workspacectl`、浏览器桥接或辅助功能权限不可用时，显示诊断和修复提示。
 
@@ -130,7 +135,10 @@ npm install
 npm run typecheck
 npm test
 npm run build
+npm run deploy:local
 ```
+
+`npm run deploy:local` 只会将 `main.js`、`manifest.json`、`styles.css` 复制到默认 Vault，绝不会覆盖 Vault 中已有的 `data.json`。如需指定其他 Vault，可运行 `npm run deploy:local -- --vault=/绝对路径/Vault`。
 
 用于 BRAT 的发布文件位于仓库根目录：
 

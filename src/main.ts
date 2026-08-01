@@ -30,12 +30,12 @@ import {
   TextPromptModal,
   WindowEditorModal,
   WorkspaceBrowserModal,
-  candidateToRecipe,
   type RestoreBlockedIssue,
   type RestoreResultItem,
   type SystemDiagnosticsReport,
   type WorkspaceSearchItem,
 } from "./modals";
+import { candidateToRecipe } from "./capture-recipe";
 import {
   applyCaptureOperations,
   buildCaptureDiffs,
@@ -198,10 +198,10 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       checkCallback: (checking) => this.managedCommand(checking, () => this.validateAndFormatCurrent()),
     });
     this.addCommand({
-      id: "migrate-current-workspace-to-v3",
-      name: "Migrate current workspace to V3",
+      id: "migrate-current-workspace-to-v4",
+      name: "Migrate current workspace to V4",
       checkCallback: (checking) =>
-        this.managedCommand(checking, () => this.migrateCurrentWorkspaceToV3()),
+        this.managedCommand(checking, () => this.migrateCurrentWorkspaceToV4()),
     });
     this.addCommand({
       id: "review-duplicate-windows",
@@ -354,7 +354,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     let source = await this.app.vault.read(file);
     let parsed = this.parse(source);
     if (!this.ensureExecutable(file, parsed)) return;
-    if (parsed.workspace && parsed.workspace.schemaVersion < 3) {
+    if (parsed.workspace && parsed.workspace.schemaVersion < 4) {
       const migrated = await this.migrateWorkspaceWithConfirmation(file, source);
       if (!migrated) return;
       source = migrated;
@@ -461,6 +461,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
             .map((tab) => tab.index) ?? [],
         ),
         manualUrl: "",
+        restoreMode: browser || isActiveObsidian ? "open-content" : "launch-only",
         action: browser || isActiveObsidian ? "add" : "ignore",
       };
       const captured = candidateToRecipe(candidate);
@@ -531,14 +532,14 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     new Notice(changed ? `已安全写入 ${operations.length} 个 Window。` : "没有需要写入的变化。");
   }
 
-  private async migrateCurrentWorkspaceToV3(): Promise<void> {
+  private async migrateCurrentWorkspaceToV4(): Promise<void> {
     const file = this.getActiveManagedFile();
     if (!file) return;
     const source = await this.app.vault.read(file);
     const parsed = this.parse(source);
     if (!this.ensureExecutable(file, parsed)) return;
-    if (parsed.workspace?.schemaVersion === 3) {
-      new Notice("当前 Workspace 已经是 V3。");
+    if (parsed.workspace?.schemaVersion === 4) {
+      new Notice("当前 Workspace 已经是 V4。");
       return;
     }
     await this.migrateWorkspaceWithConfirmation(file, source);
@@ -576,7 +577,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       migration.headingChanges,
     );
     new Notice(
-      `已迁移到 Workspace Markdown V3${
+      `已迁移到 Workspace Markdown V4${
         externalReferences > 0
           ? `；另发现 ${externalReferences} 个受管目录外引用，未自动修改`
           : ""
@@ -714,7 +715,42 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       detail: `与“${kept.name}”完全重复，本次只执行第一份。`,
       windowId: recipe.id,
     }));
-    const planResult = await this.native.plan({ windows: deduplicated.runnable });
+    let supportedWindows = deduplicated.runnable;
+    const launchOnlyWindows = supportedWindows.filter(
+      (window) => (window.restoreMode ?? "open-content") === "launch-only",
+    );
+    if (launchOnlyWindows.length > 0) {
+      const doctor = await this.native.doctor();
+      if (!doctor.ok || !doctor.value?.capabilities?.includes("launch-only")) {
+        for (const window of launchOnlyWindows) {
+          items.push({
+            status: "skipped",
+            label: `${window.appName} · ${window.name}`,
+            detail: "当前 workspacectl 不支持“仅启动应用”；请更新原生控制器后重试。",
+            windowId: window.id,
+          });
+        }
+        supportedWindows = supportedWindows.filter(
+          (window) => (window.restoreMode ?? "open-content") !== "launch-only",
+        );
+      }
+    }
+    if (supportedWindows.length === 0) {
+      const issues: RestoreBlockedIssue[] = [{
+        message: "当前原生控制器不支持此 Workspace 所需的“仅启动应用”能力。",
+      }];
+      new RestoreBlockedModal(this.app, workspace.name, issues, {
+        onRetry: sourceFile ? async () => {
+          await this.openWorkspaceFile(sourceFile);
+        } : undefined,
+        onDiagnostics: () => this.showSystemDiagnostics(),
+        onEditWindow: sourceFile
+          ? (windowId) => this.editWindowById(sourceFile, windowId)
+          : undefined,
+      }).open();
+      return { successCount: 0, items };
+    }
+    const planResult = await this.native.plan({ windows: supportedWindows });
     if (!planResult.ok || !planResult.value) {
       const failedItems: RestoreResultItem[] = [
         ...items,
@@ -730,8 +766,9 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       return { successCount: 0, items: failedItems };
     }
 
-    const ensureResult = await this.native.ensureApps({ windows: deduplicated.runnable });
+    const ensureResult = await this.native.ensureApps({ windows: supportedWindows });
     const appBlockedBundles = new Set<string>();
+    const readyAppBundles = new Set<string>();
     if (!ensureResult.ok || !ensureResult.value) {
       items.push({
         status: "degraded",
@@ -742,10 +779,11 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       for (const item of ensureResult.value.items) {
         items.push(restoreItemForEnsuredApp(item));
         if (!item.ok) appBlockedBundles.add(item.bundleId);
+        if (item.ok) readyAppBundles.add(item.bundleId);
       }
     }
 
-    const appReadyWindows = deduplicated.runnable.filter(
+    const appReadyWindows = supportedWindows.filter(
       (window) => !appBlockedBundles.has(window.bundleId),
     );
     const browserStatus = await this.browserStatusAfterEnsure(appReadyWindows);
@@ -762,7 +800,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     const runnable = readiness.runnable;
     const issues: RestoreBlockedIssue[] = [...readiness.issues];
     for (const issue of readiness.issues) {
-      const recipe = deduplicated.runnable.find(
+      const recipe = supportedWindows.find(
         (window) => window.id === issue.windowId,
       );
       items.push({
@@ -808,13 +846,19 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       });
     }
 
-    const obsidianWindows = runnable.filter((window) => window.adapter === "obsidian");
-    const browserWindows = runnable.filter((window) => window.adapter === "browser");
+    const contentWindows = runnable.filter(
+      (window) => (window.restoreMode ?? "open-content") === "open-content",
+    );
+    const obsidianWindows = contentWindows.filter((window) => window.adapter === "obsidian");
+    const browserWindows = contentWindows.filter((window) => window.adapter === "browser");
     const matchHints: Record<
       string,
       { approximateFrame?: { x: number; y: number; width: number; height: number }; title?: string }
     > = {};
-    let successCount = 0;
+    let successCount = runnable.filter(
+      (window) => (window.restoreMode ?? "open-content") === "launch-only"
+        && readyAppBundles.has(window.bundleId),
+    ).length;
 
     for (const recipe of obsidianWindows) {
       for (const [index, content] of [...recipe.contents].sort((a, b) => a.order - b.order).entries()) {
@@ -900,10 +944,13 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       for (const arranged of arrange.value ?? []) {
         const recipe = runnable.find((window) => window.id === arranged.id);
         if (!arranged.ok) {
+          const isLaunchOnly = (recipe?.restoreMode ?? "open-content") === "launch-only";
           items.push({
             status: "degraded",
             label: `布局 · ${recipe?.name ?? arranged.id}`,
-            detail: arranged.message,
+            detail: isLaunchOnly && arranged.message === "No unambiguous matching window appeared."
+              ? "应用已启动，但未找到可安全调整布局的匹配窗口。"
+              : arranged.message,
             windowId: recipe?.id,
           });
         } else if (recipe?.adapter === "manual") {
@@ -936,7 +983,11 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
   ): Promise<BrowserSnapshotReport | null> {
     const needed = new Set(
       windows
-        .filter((window) => window.adapter === "browser" && window.browserId)
+        .filter(
+          (window) => window.adapter === "browser"
+            && (window.restoreMode ?? "open-content") === "open-content"
+            && window.browserId,
+        )
         .map((window) => window.browserId as BrowserId),
     );
     if (needed.size === 0) return null;
@@ -1004,7 +1055,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       this.restoreWorkspace({
         id: parsed.workspace?.id ?? createWorkspaceId(),
         name: section.name,
-        schemaVersion: parsed.workspace?.schemaVersion ?? 3,
+        schemaVersion: parsed.workspace?.schemaVersion ?? 4,
         tags: [],
         windows: [section.recipe!],
       }, file),
@@ -1027,7 +1078,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     let source = await this.app.vault.read(file);
     let parsed = this.parse(source);
     if (!this.ensureExecutable(file, parsed)) return;
-    if (parsed.workspace && parsed.workspace.schemaVersion < 3) {
+    if (parsed.workspace && parsed.workspace.schemaVersion < 4) {
       const migrated = await this.migrateWorkspaceWithConfirmation(file, source);
       if (!migrated) return;
       source = migrated;
@@ -1087,7 +1138,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     const source = await this.app.vault.read(file);
     const parsed = this.parse(source);
     if (!this.ensureExecutable(file, parsed)) return;
-    if (parsed.workspace && parsed.workspace.schemaVersion < 3) {
+    if (parsed.workspace && parsed.workspace.schemaVersion < 4) {
       await this.migrateWorkspaceWithConfirmation(file, source);
       return;
     }

@@ -15,6 +15,17 @@ export function captureRecipeKey(recipe: WindowRecipe): string {
   const owner = recipe.adapter === "browser"
     ? recipe.browserId ?? recipe.bundleId
     : recipe.bundleId;
+  if ((recipe.restoreMode ?? "open-content") === "launch-only") {
+    return [
+      recipe.adapter,
+      owner,
+      "launch-only",
+      recipe.titleHint.trim().toLocaleLowerCase(),
+      recipe.monitor,
+      recipe.space,
+      recipe.layout,
+    ].join("\u0000");
+  }
   return [
     recipe.adapter,
     owner,

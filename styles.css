@@ -1,6 +1,6 @@
 /*
- * Workspace Bookmark 0.2.6
- * A restrained, Obsidian-native utility interface.
+ * Workspace Bookmark 0.2.7
+ * A dense, Obsidian-native workspace utility.
  */
 
 .workspace-bookmark-modal {
@@ -353,10 +353,11 @@
   background: var(--background-primary);
   border-bottom: 1px solid var(--wb-border);
   display: flex;
-  gap: 12px;
+  gap: 8px;
   justify-content: space-between;
-  margin: 0 -24px 16px;
-  padding: 8px 24px;
+  margin: 0 -24px 8px;
+  min-height: 38px;
+  padding: 4px 24px;
   position: sticky;
   top: 0;
   z-index: 5;
@@ -367,22 +368,8 @@
   font-size: var(--font-ui-small);
 }
 
-.workspace-bookmark-capture-status {
-  min-width: 0;
-}
-
-.workspace-bookmark-capture-time {
-  color: var(--text-faint);
-  display: block;
-  font-size: var(--font-ui-smaller);
-  margin-top: 2px;
-}
-
-.workspace-bookmark-capture-summary.is-warning {
-  color: var(--wb-warning);
-}
-
 .workspace-bookmark-quick-actions {
+  align-items: center;
   display: flex;
   gap: 4px;
 }
@@ -399,24 +386,27 @@
   color: var(--text-normal);
 }
 
-.workspace-bookmark-capture-source-notices {
-  display: grid;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.workspace-bookmark-capture-source-notice {
+.workspace-bookmark-capture-bridge-icons {
   align-items: center;
-  background: var(--background-secondary);
-  border-radius: var(--radius-s);
-  color: var(--text-muted);
   display: flex;
-  font-size: var(--font-ui-smaller);
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 2px;
 }
 
-.workspace-bookmark-capture-source-notice.is-warning,
+.workspace-bookmark-capture-source-icon {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--wb-warning);
+  display: inline-flex;
+  height: 28px;
+  padding: 5px;
+  width: 28px;
+}
+
+.workspace-bookmark-capture-source-icon.is-neutral {
+  color: var(--text-muted);
+}
+
 .workspace-bookmark-capture-inline-warning {
   background: color-mix(in srgb, var(--wb-warning) 10%, var(--background-primary));
   color: var(--text-normal);
@@ -443,25 +433,25 @@
 }
 
 .workspace-bookmark-capture-group {
-  margin: 18px 0 26px;
+  margin: 10px 0 16px;
 }
 
 .workspace-bookmark-group-heading {
   border-bottom: 1px solid var(--wb-border);
   justify-content: space-between;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
+  margin-bottom: 6px;
+  padding-bottom: 5px;
 }
 
 .workspace-bookmark-app-group + .workspace-bookmark-app-group {
-  margin-top: 20px;
+  margin-top: 10px;
 }
 
 .workspace-bookmark-app-heading {
   align-items: baseline;
   display: flex;
   gap: 8px;
-  margin: 0 4px 4px 48px;
+  margin: 0 4px 2px 32px;
 }
 
 .workspace-bookmark-app-heading h4 {
@@ -493,10 +483,10 @@
 .workspace-bookmark-window-row-header {
   align-items: center;
   display: grid;
-  gap: 10px;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-  min-height: 62px;
-  padding: 6px 4px;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 46px;
+  padding: 2px 4px;
 }
 
 .workspace-bookmark-result-row {
@@ -512,19 +502,14 @@
   min-width: 0;
 }
 
-.workspace-bookmark-window-select {
-  cursor: pointer;
-  justify-self: center;
-}
-
 .workspace-bookmark-window-identity {
   align-items: center;
   cursor: pointer;
   display: grid;
-  gap: 9px;
+  gap: 7px;
   grid-template-columns: 24px minmax(0, 1fr);
   min-width: 0;
-  padding: 8px 0;
+  padding: 5px 0;
 }
 
 .workspace-bookmark-window-icon {
@@ -561,15 +546,31 @@
 .workspace-bookmark-window-intent {
   align-items: center;
   display: flex;
-  gap: 2px;
+  gap: 0;
 }
 
-.workspace-bookmark-intent-label {
+.workspace-bookmark-capture-choice {
+  background: transparent;
+  border: 1px solid var(--wb-border);
+  border-radius: 0;
+  box-shadow: none;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
+  min-height: 27px;
+  padding: 0 8px;
 }
 
-.workspace-bookmark-intent-label.is-update {
+.workspace-bookmark-capture-choice:first-child {
+  border-radius: var(--radius-s) 0 0 var(--radius-s);
+}
+
+.workspace-bookmark-capture-choice:last-child {
+  border-left: 0;
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+}
+
+.workspace-bookmark-capture-choice.is-active {
+  background: var(--wb-accent-soft);
   color: var(--text-accent);
 }
 
@@ -582,8 +583,8 @@
 }
 
 .workspace-bookmark-capture-tabs {
-  margin-left: 44px;
-  padding: 0 4px 8px 24px;
+  margin-left: 32px;
+  padding: 0 4px 5px 24px;
 }
 
 .workspace-bookmark-capture-tabs:empty {
@@ -597,7 +598,7 @@
   display: flex;
   font-size: var(--font-ui-smaller);
   gap: 8px;
-  min-height: 36px;
+  min-height: 28px;
 }
 
 .workspace-bookmark-tabs-heading small {
@@ -607,7 +608,7 @@
 .workspace-bookmark-tab-actions {
   display: flex;
   gap: 4px;
-  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .workspace-bookmark-tab-actions button {
@@ -619,7 +620,7 @@
 
 .workspace-bookmark-tab-row {
   border: 0;
-  min-height: 44px;
+  min-height: 36px;
   padding: 4px 0;
 }
 
@@ -645,12 +646,48 @@
 
 .workspace-bookmark-manual-url {
   display: none;
-  margin-left: 44px;
-  padding: 0 4px 8px 24px;
+  margin-left: 32px;
+  padding: 2px 4px 7px 24px;
 }
 
 .workspace-bookmark-manual-url.is-visible {
   display: block;
+}
+
+.workspace-bookmark-capture-restore-controls {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.workspace-bookmark-capture-link {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  padding: 0;
+}
+
+.workspace-bookmark-capture-link.is-active {
+  color: var(--text-accent);
+  font-weight: var(--font-semibold);
+}
+
+.workspace-bookmark-capture-url-input {
+  display: none;
+  margin-top: 3px;
+  max-width: 100%;
+  width: 100%;
+}
+
+.workspace-bookmark-capture-url-input.is-visible {
+  display: block;
+}
+
+.workspace-bookmark-contents-section.is-hidden {
+  display: none;
 }
 
 /* Window editor */
@@ -1167,11 +1204,12 @@
 
   .workspace-bookmark-window-row-header {
     align-items: start;
-    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .workspace-bookmark-window-intent {
-    grid-column: 2;
+    grid-column: 1;
+    justify-self: start;
   }
 
   .workspace-bookmark-window-primary {

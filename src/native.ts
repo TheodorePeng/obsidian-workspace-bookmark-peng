@@ -37,6 +37,7 @@ export interface DoctorReport {
     };
   }>;
   platform: string;
+  capabilities?: string[];
 }
 
 export interface ArrangementItem {

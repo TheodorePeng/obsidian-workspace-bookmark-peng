@@ -158,6 +158,7 @@ function describeRecipeChanges(
     ["Bundle ID", previous.bundleId, next.bundleId],
     ["Title hint", previous.titleHint, next.titleHint],
     ["Open mode", previous.openMode, next.openMode],
+    ["Restore mode", previous.restoreMode ?? "open-content", next.restoreMode ?? "open-content"],
     ["Monitor", previous.monitor, next.monitor],
     ["Layout", previous.layout, next.layout],
   ];

@@ -1,6 +1,6 @@
 {
   "name": "workspace-bookmark-peng",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Workspace Bookmark Peng Obsidian plugin",
   "main": "main.js",
   "type": "module",
@@ -8,6 +8,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
+    "deploy:local": "npm run build && node scripts/deploy-local.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

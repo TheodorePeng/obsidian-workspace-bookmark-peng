@@ -38,6 +38,7 @@ export function partitionRestoreReadiness(
     }
     if (
       window.adapter === "browser"
+      && (window.restoreMode ?? "open-content") === "open-content"
       && (!window.browserId || browserConnection.get(window.browserId) !== true)
     ) {
       const alternatives = [...browserConnection.entries()]

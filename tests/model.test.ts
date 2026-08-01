@@ -25,6 +25,7 @@ const recipe: WindowRecipe = {
   monitor: "external-primary",
   space: "current",
   layout: "right 0.4",
+  restoreMode: "open-content",
   contents: [
     {
       order: 1,
@@ -51,10 +52,10 @@ describe("workspace markdown", () => {
     const parsed = parseWorkspaceMarkdown(validMarkdown());
     expect(parsed.diagnostics).toEqual([]);
     expect(parsed.workspace?.windows[0]).toEqual(recipe);
-    expect(parsed.workspace?.schemaVersion).toBe(3);
+    expect(parsed.workspace?.schemaVersion).toBe(4);
   });
 
-  it("rejects numeric spaces in V3", () => {
+  it("rejects numeric spaces in V4", () => {
     const parsed = parseWorkspaceMarkdown(validMarkdown().replace("| Space | 当前 |", "| Space | 2 |"));
     expect(parsed.diagnostics.some((item) => item.code === "SPACE_UNSUPPORTED")).toBe(true);
   });
@@ -67,7 +68,7 @@ describe("workspace markdown", () => {
 
   it("formats only Window regions", () => {
     const source = validMarkdown()
-      .replace("schema_version: 3", "schema_version: 3\ncustom_property: keep-me")
+      .replace("schema_version: 4", "schema_version: 4\ncustom_property: keep-me")
       .replace("| 布局 | right 0.4 |", "| 布局|right 0.4|")
       .replace("### 打开内容", "这里是用户备注，必须保留。\n\n### 打开内容");
     const parsed = parseWorkspaceMarkdown(source);
@@ -85,10 +86,11 @@ describe("workspace markdown", () => {
     expect(replaceWindowSection(source, null, recipe)).toContain("## Google Chrome · AI 研究浏览器");
   });
 
-  it("renders V3 with editable settings, readonly details, and URL last", () => {
+  it("renders V4 with editable settings, readonly details, and URL last", () => {
     const rendered = renderWindowSection(recipe);
     expect(rendered).toContain("## Google Chrome · AI 研究浏览器");
     expect(rendered).toContain("### 可编辑设置");
+    expect(rendered).toContain("| 恢复方式 | 恢复页面或文档 |");
     expect(rendered).toContain("### 只读信息");
     expect(rendered.indexOf("| 打开方式 | 聚焦已有页面 |")).toBeLessThan(
       rendered.indexOf("| 应用 | Google Chrome |"),
@@ -135,7 +137,7 @@ schema_version: 1
     expect(formatWorkspaceMarkdown(legacy, parsed)).toBe(legacy);
   });
 
-  it("migrates V1 atomically to V3 while preserving prose and custom frontmatter", () => {
+  it("migrates V1 atomically to V4 while preserving prose and custom frontmatter", () => {
     const legacy = `---
 type: workspace
 workspace_id: ws_01JZX8A9ABCDEFGHJKMNPQRSTV
@@ -169,7 +171,7 @@ custom_property: keep-me
 `;
     const migrated = migrateWorkspaceMarkdownToLatest(legacy);
     expect(migrated.ok).toBe(true);
-    expect(migrated.source).toContain("schema_version: 3");
+    expect(migrated.source).toContain("schema_version: 4");
     expect(migrated.source).toContain("custom_property: keep-me");
     expect(migrated.source).toContain("这是用户备注。");
     expect(migrated.source).toContain("## Google Chrome · 旧 Chrome");
@@ -240,7 +242,7 @@ tags: []
     expect(canAutoInitializeWorkspaceSource("# Draft")).toBe(true);
     expect(canAutoInitializeWorkspaceSource("# Draft\n\nBody")).toBe(false);
     const initialized = initializeWorkspaceMarkdown("# Draft", "ws_01JZX8A9ABCDEFGHJKMNPQRSTV", "Fallback");
-    expect(initialized).toContain("schema_version: 3");
+    expect(initialized).toContain("schema_version: 4");
     expect(initialized).toContain("name: Draft");
     expect(initialized).not.toContain("\n# Draft\n");
     expect(parseWorkspaceMarkdown(initialized).diagnostics).toEqual([]);
@@ -267,6 +269,31 @@ tags: []
     );
     expect(formatted).toContain("| 布局 | right 0.4 |");
     expect(formatted.replaceAll("\r\n", "")).not.toContain("\n");
+  });
+
+  it("renders and parses a V4 launch-only Window without an content table", () => {
+    const launchOnly = structuredClone(recipe);
+    launchOnly.id = "win_01JZX8A9ABCDEFGHJKMNPQRSTW";
+    launchOnly.name = "音乐";
+    launchOnly.adapter = "manual";
+    launchOnly.appName = "Music";
+    launchOnly.bundleId = "com.apple.Music";
+    delete launchOnly.browserId;
+    launchOnly.titleHint = "Music";
+    launchOnly.openMode = "app-default";
+    launchOnly.restoreMode = "launch-only";
+    launchOnly.contents = [];
+    const source = `${createWorkspaceTemplate("ws_01JZX8A9ABCDEFGHJKMNPQRSTV", "测试")}${renderWindowSection(launchOnly)}`;
+    expect(source).not.toContain("### 打开内容");
+    const parsed = parseWorkspaceMarkdown(source);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.workspace?.windows[0]).toEqual(launchOnly);
+  });
+
+  it("treats V1–V3 Windows without a restore mode as open-content", () => {
+    const parsed = parseWorkspaceMarkdown(validMarkdown().replace("schema_version: 4", "schema_version: 3"));
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.workspace?.windows[0]?.restoreMode).toBe("open-content");
   });
 
   it("warns about exact focus-existing duplicates and removes only confirmed sections", () => {

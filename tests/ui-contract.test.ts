@@ -36,15 +36,19 @@ describe("Obsidian modal shell", () => {
 });
 
 describe("Progressive disclosure contract", () => {
-  it("uses flat window rows and collapsible browser tabs", () => {
+  it("uses compact rows, direct capture choices, and collapsible browser tabs", () => {
     expect(modals).toContain('cls: "workspace-bookmark-window-row"');
     expect(modals).toContain('cls: "workspace-bookmark-capture-tabs"');
-    expect(modals).toContain('text: "自定义标签页"');
+    expect(modals).toContain('text: "忽略"');
+    expect(modals).toContain('const writeLabel = candidate.targetId ? "更新" : "新增"');
+    expect(modals).toContain('text: "仅启动应用"');
+    expect(modals).toContain('text: "添加恢复 URL"');
     expect(css).not.toContain(".workspace-bookmark-window-card");
   });
 
   it("offers explicit live refresh and actionable blocked restore states", () => {
-    expect(modals).toContain('.setButtonText("刷新窗口")');
+    expect(modals).toContain('.setIcon("refresh-cw")');
+    expect(modals).toContain('workspace-bookmark-capture-source-icon');
     expect(modals).toContain("reconcileCaptureSnapshot");
     expect(modals).toContain("export class RestoreBlockedModal");
     expect(modals).toContain('.setButtonText("重新检测")');

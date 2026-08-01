@@ -2,6 +2,7 @@ import type {
   BrowserId,
   MonitorRole,
   OpenMode,
+  RestoreMode,
   WindowAdapter,
   WindowRecipe,
   WorkspaceContent,
@@ -34,7 +35,7 @@ export interface WindowSection {
   endLine: number;
   name: string;
   appName: string;
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
   recipe: WindowRecipe | null;
 }
 
@@ -64,6 +65,7 @@ const MODES = new Set<OpenMode>([
   "focus-existing",
   "app-default",
 ]);
+const RESTORE_MODES = new Set<RestoreMode>(["open-content", "launch-only"]);
 const MONITORS = new Set<MonitorRole>([
   "current",
   "main",
@@ -103,6 +105,11 @@ const OPEN_MODE_LABELS: Record<OpenMode, string> = {
   "app-default": "交给应用处理",
 };
 const OPEN_MODE_VALUES = reverseMap(OPEN_MODE_LABELS);
+const RESTORE_MODE_LABELS: Record<RestoreMode, string> = {
+  "open-content": "恢复页面或文档",
+  "launch-only": "仅启动应用",
+};
+const RESTORE_MODE_VALUES = reverseMap(RESTORE_MODE_LABELS);
 const MONITOR_LABELS: Record<MonitorRole, string> = {
   current: "当前屏幕",
   main: "主屏幕",
@@ -122,7 +129,13 @@ export function parseWorkspaceMarkdown(
   const frontmatter = frontmatterResult.value;
   const managed = frontmatter?.type === "workspace";
   const schemaNumber = Number(frontmatter?.schema_version);
-  const sectionVersion: 1 | 2 | 3 = schemaNumber === 1 ? 1 : schemaNumber === 2 ? 2 : 3;
+  const sectionVersion: 1 | 2 | 3 | 4 = schemaNumber === 1
+    ? 1
+    : schemaNumber === 2
+      ? 2
+      : schemaNumber === 3
+        ? 3
+        : 4;
   const sections = findWindowSections(lines, sectionVersion);
   if (!managed) {
     return { workspace: null, diagnostics, managed: false, sections, frontmatter };
@@ -141,8 +154,8 @@ export function parseWorkspaceMarkdown(
   if (!name.trim()) {
     diagnostics.push(error("WORKSPACE_NAME", "name 不能为空。", 1, undefined, "name"));
   }
-  if (schemaNumber !== 1 && schemaNumber !== 2 && schemaNumber !== 3) {
-    diagnostics.push(error("SCHEMA_VERSION", "schema_version 必须为 1、2 或 3。", 1, undefined, "schema_version"));
+  if (schemaNumber !== 1 && schemaNumber !== 2 && schemaNumber !== 3 && schemaNumber !== 4) {
+    diagnostics.push(error("SCHEMA_VERSION", "schema_version 必须为 1、2、3 或 4。", 1, undefined, "schema_version"));
   }
   if (new Set(tags).size !== tags.length) {
     diagnostics.push(error("TAGS_DUPLICATE", "tags 不得重复。", 1, undefined, "tags"));
@@ -233,7 +246,7 @@ export function formatWorkspaceMarkdown(source: string, parsed: ParsedWorkspace)
   if (
     !parsed.managed
     || !parsed.workspace
-    || parsed.workspace.schemaVersion !== 3
+    || parsed.workspace.schemaVersion !== 4
     || parsed.diagnostics.some((item) => item.severity === "error")
   ) return source;
   return rewriteSections(source, parsed.sections, false);
@@ -276,11 +289,13 @@ export function removeWindowSections(
 }
 
 export function renderWindowSection(recipe: WindowRecipe): string {
+  const restoreMode = recipe.restoreMode ?? "open-content";
   const editableFields: Array<[string, string, string]> = [
+    ["恢复方式", RESTORE_MODE_LABELS[restoreMode], "恢复页面或文档 / 仅启动应用"],
     ["打开方式", OPEN_MODE_LABELS[recipe.openMode], openModeHint(recipe.adapter)],
     ["屏幕", MONITOR_LABELS[recipe.monitor], "当前屏幕 / 主屏幕 / Mac 内置屏幕 / 主要外接屏幕"],
     ["布局", recipe.layout, "full / keep / left 0.5 / right 0.4 / center 0.8 0.7 / frame 0 0 1 1"],
-    ["Space", recipe.space === "current" ? "当前" : recipe.space, "V3 仅支持当前"],
+    ["Space", recipe.space === "current" ? "当前" : recipe.space, "当前版本仅支持当前"],
     ["标题匹配", recipe.titleHint, "任意窗口标题片段，用于匹配窗口"],
   ];
   const readonlyFields: Array<[string, string]> = [
@@ -296,6 +311,16 @@ export function renderWindowSection(recipe: WindowRecipe): string {
       `| ${item.order} | ${escapeCell(item.title)} | ${item.active ? "是" : "否"} | ${item.pinned ? "是" : "否"} | \`${escapeCode(item.url)}\` |`,
     )
     .join("\n");
+  const contentSection = restoreMode === "open-content"
+    ? [
+      "",
+      "### 打开内容",
+      "",
+      "| 顺序 | 页面标题 | 激活 | 固定 | URL |",
+      "|---:|---|:---:|:---:|---|",
+      contentRows,
+    ]
+    : [];
   return [
     `## ${safeHeading(recipe.appName)} · ${safeHeading(recipe.name)}`,
     "",
@@ -306,12 +331,7 @@ export function renderWindowSection(recipe: WindowRecipe): string {
     ...editableFields.map(([key, value, hint]) =>
       `| ${escapeCell(key)} | ${escapeCell(value)} | ${escapeCell(hint)} |`,
     ),
-    "",
-    "### 打开内容",
-    "",
-    "| 顺序 | 页面标题 | 激活 | 固定 | URL |",
-    "|---:|---|:---:|:---:|---|",
-    contentRows,
+    ...contentSection,
     "",
     "### 只读信息",
     "",
@@ -338,7 +358,7 @@ export function createWorkspaceTemplate(id: string, name: string): string {
     type: "workspace",
     workspace_id: id,
     name,
-    schema_version: 3,
+    schema_version: 4,
     tags: [],
   }).trimEnd();
   return `---\n${frontmatter}\n---\n\n此文档由 Workspace Bookmark 管理。你可以通过插件 Capture 当前窗口，也可以手动编辑每个 APP 区域中的“可编辑设置”和“打开内容”。\n\n`;
@@ -374,7 +394,7 @@ export function initializeWorkspaceMarkdown(
     type: "workspace",
     workspace_id: id,
     name: stringValue(frontmatter.name) || headingName(body) || name,
-    schema_version: 3,
+    schema_version: 4,
     tags: Array.isArray(frontmatter.tags) ? frontmatter.tags : [],
   };
   const renderedFrontmatter = stringifyYaml(initialized).trimEnd();
@@ -393,7 +413,7 @@ export function migrateWorkspaceMarkdownToLatest(
   if (!parsed.managed || !parsed.workspace || errors.length > 0) {
     return { ok: false, source, diagnostics: parsed.diagnostics, headingChanges: [] };
   }
-  if (parsed.workspace.schemaVersion === 3) {
+  if (parsed.workspace.schemaVersion === 4) {
     return { ok: true, source, diagnostics: [], headingChanges: [] };
   }
   const usedHeadings = new Set<string>();
@@ -413,8 +433,8 @@ export function migrateWorkspaceMarkdownToLatest(
   });
   let migrated = rewriteSections(source, migratedSections, true);
   migrated = migrated.replace(
-    /(^---\r?\n[\s\S]*?^schema_version:\s*)(1|2)(\s*$[\s\S]*?^---\s*$)/m,
-    (_match, prefix: string, _version: string, suffix: string) => `${prefix}3${suffix}`,
+    /(^---\r?\n[\s\S]*?^schema_version:\s*)(1|2|3)(\s*$[\s\S]*?^---\s*$)/m,
+    (_match, prefix: string, _version: string, suffix: string) => `${prefix}4${suffix}`,
   );
   const verified = parseWorkspaceMarkdown(migrated, options);
   if (verified.diagnostics.some((item) => item.severity === "error")) {
@@ -447,7 +467,7 @@ function rewriteSections(
     const rendered = renderWindowSectionPreserving(
       current,
       section.recipe,
-      migrating ? section.schemaVersion : 3,
+      migrating ? section.schemaVersion : 4,
     );
     result = result.slice(0, section.start) + rendered + result.slice(section.end);
   }
@@ -457,19 +477,26 @@ function rewriteSections(
 function renderWindowSectionPreserving(
   sectionSource: string,
   recipe: WindowRecipe,
-  sourceVersion: 1 | 2 | 3,
+  sourceVersion: 1 | 2 | 3 | 4,
 ): string {
   const lines = normalize(sectionSource).split("\n");
   const bounds = managedBounds(lines, sourceVersion);
   if (!bounds) return renderWindowSection(recipe);
   const prefix = lines.slice(1, bounds.settingsHeading).join("\n").trim();
-  const between = lines.slice(bounds.settingsTable.end, bounds.contentsHeading).join("\n").trim();
+  const nextManagedHeading = bounds.contentsHeading >= 0
+    ? bounds.contentsHeading
+    : bounds.readonlyHeading >= 0
+      ? bounds.readonlyHeading
+      : bounds.managedEnd;
+  const between = lines.slice(bounds.settingsTable.end, nextManagedHeading).join("\n").trim();
   const tail = lines.slice(bounds.managedEnd).join("\n").trim();
   const rendered = renderWindowSection(recipe).trimEnd().split("\n");
   const settingsHeading = rendered.findIndex((line) => line === "### 可编辑设置");
   const contentsHeading = rendered.findIndex((line) => line === "### 打开内容");
+  const readonlyHeading = rendered.findIndex((line) => line === "### 只读信息");
   const output = [...rendered];
-  if (between) output.splice(contentsHeading, 0, "", between, "");
+  const firstManagedHeading = contentsHeading >= 0 ? contentsHeading : readonlyHeading;
+  if (between && firstManagedHeading >= 0) output.splice(firstManagedHeading, 0, "", between, "");
   if (prefix) output.splice(settingsHeading, 0, "", prefix, "");
   if (tail) output.push("", tail);
   return `${output.join("\n").replace(/\n{3,}/g, "\n\n")}\n`;
@@ -477,12 +504,12 @@ function renderWindowSectionPreserving(
 
 function managedBounds(
   lines: string[],
-  version: 1 | 2 | 3,
+  version: 1 | 2 | 3 | 4,
 ): {
   settingsHeading: number;
   settingsTable: MarkdownTable;
   contentsHeading: number;
-  contentsTable: MarkdownTable;
+  contentsTable: MarkdownTable | null;
   readonlyHeading: number;
   readonlyTable: MarkdownTable | null;
   managedEnd: number;
@@ -496,16 +523,17 @@ function managedBounds(
         lines,
         1,
         lines.length,
-        version === 3 ? /^###\s+可编辑设置\s*$/ : /^###\s+窗口设置\s*$/,
+        version >= 3 ? /^###\s+可编辑设置\s*$/ : /^###\s+窗口设置\s*$/,
       );
   const contentsHeading = findLine(lines, 1, lines.length, contentsPattern);
   const settingsTable = findTable(lines, settingsHeading, contentsHeading < 0 ? lines.length : contentsHeading);
   const contentsTable = contentsHeading < 0
     ? null
     : findTable(lines, contentsHeading + 1, lines.length);
-  if (!settingsTable || contentsHeading < 0 || !contentsTable) return null;
-  const readonlyHeading = version === 3
-    ? findLine(lines, contentsTable.end, lines.length, /^###\s+只读信息\s*$/)
+  if (!settingsTable || (version < 4 && (contentsHeading < 0 || !contentsTable))) return null;
+  const readonlyStart = contentsTable?.end ?? settingsTable.end;
+  const readonlyHeading = version >= 3
+    ? findLine(lines, readonlyStart, lines.length, /^###\s+只读信息\s*$/)
     : -1;
   const readonlyTable = readonlyHeading < 0
     ? null
@@ -520,7 +548,7 @@ function managedBounds(
     contentsTable,
     readonlyHeading,
     readonlyTable,
-    managedEnd: detailsEnd >= 0 ? detailsEnd + 1 : readonlyTable?.end ?? contentsTable.end,
+    managedEnd: detailsEnd >= 0 ? detailsEnd + 1 : readonlyTable?.end ?? contentsTable?.end ?? settingsTable.end,
   };
 }
 
@@ -591,7 +619,11 @@ function parseWindowSection(
   const layout = section.schemaVersion === 1
     ? fields.get("layout") ?? ""
     : fields.get("布局") ?? "";
+  const restoreModeRaw = section.schemaVersion === 4
+    ? fields.get("恢复方式") ?? ""
+    : "open-content";
   const openMode = (OPEN_MODE_VALUES[openModeRaw] ?? openModeRaw) as OpenMode;
+  const restoreMode = (RESTORE_MODE_VALUES[restoreModeRaw] ?? restoreModeRaw) as RestoreMode;
   const monitor = (MONITOR_VALUES[monitorRaw] ?? monitorRaw) as MonitorRole;
   const space = spaceRaw === "当前" ? "current" : spaceRaw;
 
@@ -605,6 +637,7 @@ function parseWindowSection(
     ["屏幕", monitor],
     ["Space", space],
     ["布局", layout],
+    ...(section.schemaVersion === 4 ? [["恢复方式", restoreMode] as [string, string]] : []),
   ];
   for (const [field, value] of requiredValues) {
     if (!value) diagnostics.push(error("MISSING_FIELD", `缺少字段 ${field}。`, section.headingLine + 1, section.name, field));
@@ -623,6 +656,9 @@ function parseWindowSection(
   } else if (ADAPTERS.has(adapter) && !ADAPTER_MODES[adapter].has(openMode)) {
     diagnostics.push(error("OPEN_MODE_APP", `${adapter} 不支持 ${openMode}。`, section.headingLine + 1, section.name, "打开方式"));
   }
+  if (!RESTORE_MODES.has(restoreMode)) {
+    diagnostics.push(error("RESTORE_MODE_ENUM", `不支持的恢复方式：${restoreMode || "（空）"}`, section.headingLine + 1, section.name, "恢复方式"));
+  }
   if (!MONITORS.has(monitor)) {
     diagnostics.push(error("MONITOR_ENUM", `不支持的屏幕：${monitor || "（空）"}`, section.headingLine + 1, section.name, "屏幕"));
   }
@@ -639,7 +675,7 @@ function parseWindowSection(
   if (layoutError) diagnostics.push(error("LAYOUT_INVALID", layoutError, section.headingLine + 1, section.name, "布局"));
 
   const contents: WorkspaceContent[] = [];
-  for (const row of bounds.contentsTable.rows) {
+  for (const row of bounds.contentsTable?.rows ?? []) {
     if (row.length < 5) continue;
     if (section.schemaVersion === 1) {
       const content = legacyContentValue(row);
@@ -661,7 +697,7 @@ function parseWindowSection(
       });
     }
   }
-  validateContents(contents, diagnostics, section, options);
+  validateContents(contents, restoreMode, diagnostics, section, options);
   if (diagnostics.some((item) => item.severity === "error")) return { recipe: null, diagnostics };
   return {
     recipe: {
@@ -676,6 +712,7 @@ function parseWindowSection(
       monitor,
       space,
       layout,
+      restoreMode,
       contents,
     },
     diagnostics,
@@ -684,10 +721,17 @@ function parseWindowSection(
 
 function validateContents(
   contents: WorkspaceContent[],
+  restoreMode: RestoreMode,
   diagnostics: Diagnostic[],
   section: WindowSection,
   options: ValidationOptions,
 ): void {
+  if (restoreMode === "launch-only") {
+    if (contents.length > 0) {
+      diagnostics.push(error("LAUNCH_ONLY_CONTENTS", "仅启动应用时不能包含“打开内容”。", section.headingLine + 1, section.name, "恢复方式"));
+    }
+    return;
+  }
   if (contents.length === 0) {
     diagnostics.push(error("CONTENTS_EMPTY", "打开内容至少需要一行。", section.headingLine + 1, section.name));
     return;
@@ -738,7 +782,7 @@ function parseFrontmatter(lines: string[]): {
   }
 }
 
-function findWindowSections(lines: string[], schemaVersion: 1 | 2 | 3): WindowSection[] {
+function findWindowSections(lines: string[], schemaVersion: 1 | 2 | 3 | 4): WindowSection[] {
   const sections: WindowSection[] = [];
   const offsets = lineOffsets(lines);
   for (let index = 0; index < lines.length; index += 1) {
@@ -752,7 +796,7 @@ function findWindowSections(lines: string[], schemaVersion: 1 | 2 | 3): WindowSe
         break;
       }
     }
-    const version = legacy ? 1 : schemaVersion === 3 ? 3 : 2;
+    const version = legacy ? 1 : schemaVersion >= 3 ? schemaVersion : 2;
     if (
       version !== 1
       && findLine(lines, index + 1, endLine, /^###\s+(窗口设置|可编辑设置)\s*$/) < 0
@@ -768,15 +812,15 @@ function findWindowSections(lines: string[], schemaVersion: 1 | 2 | 3): WindowSe
       recipe: null,
     });
   }
-  if (schemaVersion === 1 || schemaVersion === 2 || schemaVersion === 3) return sections;
+  if (schemaVersion >= 1 && schemaVersion <= 4) return sections;
   return sections;
 }
 
-function settingValue(row: string[], version: 1 | 2 | 3): string {
-  if (version === 3 && row.length > 3) {
+function settingValue(row: string[], version: 1 | 2 | 3 | 4): string {
+  if (version >= 3 && row.length > 3) {
     return stripCode(row.slice(1, -1).join(" | ")).trim();
   }
-  if (version === 3) return stripCode(row[1] ?? "").trim();
+  if (version >= 3) return stripCode(row[1] ?? "").trim();
   return stripCode(row.slice(1).join(" | ")).trim();
 }
 

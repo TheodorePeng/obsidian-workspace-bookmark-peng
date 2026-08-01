@@ -4,6 +4,7 @@ import type {
   BrowserTabSnapshot,
   BrowserWindowSnapshot,
   NativeWindowSnapshot,
+  RestoreMode,
 } from "./contracts";
 
 export interface CaptureCandidate {
@@ -17,6 +18,7 @@ export interface CaptureCandidate {
   selected: boolean;
   selectedTabs: Set<number>;
   manualUrl: string;
+  restoreMode?: RestoreMode;
   action: "add" | "update" | "ignore";
   targetId?: string;
   duplicateTargetIds?: string[];
@@ -66,6 +68,7 @@ export function reconcileCaptureSnapshot(
       selected: prior.selected,
       selectedTabs,
       manualUrl: prior.manualUrl,
+      restoreMode: prior.restoreMode ?? candidate.restoreMode,
       action: prior.action,
       targetId: prior.targetId,
       duplicateTargetIds: prior.duplicateTargetIds ?? candidate.duplicateTargetIds,
