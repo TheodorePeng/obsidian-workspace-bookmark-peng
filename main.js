@@ -7872,14 +7872,14 @@ function renderWindowSection(recipe) {
   const contentRows = [...recipe.contents].sort((left, right) => left.order - right.order).map(
     (item) => `| ${item.order} | ${escapeCell(item.title)} | ${item.active ? "\u662F" : "\u5426"} | ${item.pinned ? "\u662F" : "\u5426"} | \`${escapeCode(item.url)}\` |`
   ).join("\n");
-  const contentSection = restoreMode === "open-content" ? [
+  const contentSection = [
     "",
     "### \u6253\u5F00\u5185\u5BB9",
     "",
     "| \u987A\u5E8F | \u9875\u9762\u6807\u9898 | \u6FC0\u6D3B | \u56FA\u5B9A | URL |",
     "|---:|---|:---:|:---:|---|",
-    contentRows
-  ] : [];
+    ...contentRows ? [contentRows] : []
+  ];
   return [
     `## ${safeHeading(recipe.appName)} \xB7 ${safeHeading(recipe.name)}`,
     "",
@@ -8049,12 +8049,22 @@ function managedBounds(lines, version) {
     version >= 3 ? /^###\s+可编辑设置\s*$/ : /^###\s+窗口设置\s*$/
   );
   const contentsHeading = findLine(lines, 1, lines.length, contentsPattern);
-  const settingsTable = findTable(lines, settingsHeading, contentsHeading < 0 ? lines.length : contentsHeading);
-  const contentsTable = contentsHeading < 0 ? null : findTable(lines, contentsHeading + 1, lines.length);
+  const readonlyHeading = version >= 3 ? findLine(lines, 1, lines.length, /^###\s+只读信息\s*$/) : -1;
+  const settingsEnd = contentsHeading >= 0 ? contentsHeading : readonlyHeading >= 0 ? readonlyHeading : lines.length;
+  const settingsTable = findTable(
+    lines,
+    settingsHeading,
+    settingsEnd,
+    version === 1 ? [["\u5B57\u6BB5", "\u503C"]] : version === 2 ? [["\u5C5E\u6027", "\u8BBE\u7F6E"]] : [["\u8BBE\u7F6E\u9879", "\u5F53\u524D\u503C", "\u586B\u5199\u63D0\u793A"]]
+  );
+  const contentsTable = contentsHeading < 0 ? null : findTable(
+    lines,
+    contentsHeading + 1,
+    readonlyHeading >= 0 ? readonlyHeading : lines.length,
+    version === 1 ? [["\u987A\u5E8F", "\u6807\u9898", "URL", "\u6FC0\u6D3B", "\u56FA\u5B9A"]] : [["\u987A\u5E8F", "\u9875\u9762\u6807\u9898", "\u6FC0\u6D3B", "\u56FA\u5B9A", "URL"]]
+  );
   if (!settingsTable || version < 4 && (contentsHeading < 0 || !contentsTable)) return null;
-  const readonlyStart = contentsTable?.end ?? settingsTable.end;
-  const readonlyHeading = version >= 3 ? findLine(lines, readonlyStart, lines.length, /^###\s+只读信息\s*$/) : -1;
-  const readonlyTable = readonlyHeading < 0 ? null : findTable(lines, readonlyHeading + 1, lines.length);
+  const readonlyTable = readonlyHeading < 0 ? null : findTable(lines, readonlyHeading + 1, lines.length, [["\u9879", "\u503C"]]);
   const detailsEnd = readonlyHeading < 0 ? -1 : findLine(lines, readonlyHeading + 1, lines.length, /^<\/details>\s*$/);
   return {
     settingsHeading,
@@ -8109,6 +8119,7 @@ function parseWindowSection(lines, section, options) {
   const restoreMode = RESTORE_MODE_VALUES[restoreModeRaw] ?? restoreModeRaw;
   const monitor = MONITOR_VALUES[monitorRaw] ?? monitorRaw;
   const space = spaceRaw === "\u5F53\u524D" ? "current" : spaceRaw;
+  const contentsTableInvalid = section.schemaVersion >= 4 && (bounds.contentsHeading >= 0 && !bounds.contentsTable || bounds.contentsHeading < 0 && restoreMode === "open-content");
   const requiredValues = [
     ["ID", id],
     ["\u5E94\u7528", appName],
@@ -8178,7 +8189,17 @@ function parseWindowSection(lines, section, options) {
       });
     }
   }
-  validateContents(contents, restoreMode, diagnostics, section, options);
+  if (contentsTableInvalid) {
+    diagnostics.push(error(
+      "CONTENTS_TABLE_INVALID",
+      "\u201C\u6253\u5F00\u5185\u5BB9\u201D\u8868\u683C\u7F3A\u5931\u6216\u683C\u5F0F\u4E0D\u6B63\u786E\u3002\u8BF7\u4FDD\u7559\u6807\u51C6\u8868\u5934\u4E0E\u5206\u9694\u884C\u3002",
+      section.headingLine + Math.max(bounds.contentsHeading, 0) + 1,
+      section.name,
+      "\u6253\u5F00\u5185\u5BB9"
+    ));
+  } else {
+    validateContents(contents, restoreMode, diagnostics, section, options);
+  }
   if (diagnostics.some((item) => item.severity === "error")) return { recipe: null, diagnostics };
   return {
     recipe: {
@@ -8334,11 +8355,11 @@ function isBooleanCell(value) {
     stripCode(value).trim().toLowerCase()
   );
 }
-function findTable(lines, start, end) {
+function findTable(lines, start, end, expectedHeaders = []) {
   for (let index = Math.max(0, start); index + 1 < end; index += 1) {
     const header = splitTableRow(lines[index] ?? "");
     const separator = splitTableRow(lines[index + 1] ?? "");
-    if (!header || !separator || !separator.every((cell) => /^:?-{3,}:?$/.test(cell.trim()))) continue;
+    if (!header || !separator || header.length !== separator.length || !separator.every((cell) => /^:?-+:?$/.test(cell.trim())) || expectedHeaders.length > 0 && !expectedHeaders.some((expected) => tableHeaderMatches(header, expected))) continue;
     const rows = [];
     let cursor = index + 2;
     for (; cursor < end; cursor += 1) {
@@ -8349,6 +8370,11 @@ function findTable(lines, start, end) {
     return { start: index, end: cursor, header, rows };
   }
   return null;
+}
+function tableHeaderMatches(actual, expected) {
+  return actual.length === expected.length && actual.every(
+    (cell, index) => stripCode(cell).trim() === expected[index]
+  );
 }
 function splitTableRow(line) {
   const trimmed = line.trim();
@@ -9028,6 +9054,14 @@ var CaptureModal = class extends import_obsidian.Modal {
         });
       }
     }
+    if (candidate.obsidianUriFallback) {
+      const warning2 = row.createDiv({ cls: "workspace-bookmark-capture-inline-warning" });
+      const warningIcon = warning2.createSpan();
+      (0, import_obsidian.setIcon)(warningIcon, "link-2-off");
+      warning2.createSpan({
+        text: "\u8DEF\u5F84\u578B\u5F15\u7528\uFF0C\u91CD\u547D\u540D\u540E\u53EF\u80FD\u9700\u8981\u4FEE\u590D\u3002\u542F\u7528 Advanced URI \u53EF\u6539\u7528\u7A33\u5B9A UUID\u3002"
+      });
+    }
     identity.addEventListener("click", () => {
       if (canSelect) applySelection(!candidate.selected);
     });
@@ -9344,6 +9378,48 @@ var MigrationPreviewModal = class extends import_obsidian.Modal {
       })
     ).addButton(
       (button) => button.setButtonText("\u786E\u8BA4\u8FC1\u79FB").setCta().onClick(() => {
+        this.settled = true;
+        this.onDecision(true);
+        this.close();
+      })
+    );
+  }
+  onClose() {
+    if (!this.settled) this.onDecision(false);
+  }
+};
+var WorkspaceRepairPreviewModal = class extends import_obsidian.Modal {
+  constructor(app, changes, onDecision) {
+    super(app);
+    this.changes = changes;
+    this.onDecision = onDecision;
+  }
+  settled = false;
+  onOpen() {
+    prepareModal(this, "standard");
+    this.titleEl.setText("\u4FEE\u590D Workspace \u5F15\u7528");
+    createModalIntro(
+      this.contentEl,
+      `\u51C6\u5907\u4FEE\u590D ${this.changes.length} \u9879`,
+      "\u53EA\u4F1A\u66F4\u65B0\u7CBE\u786E\u5339\u914D\u7684\u65E7\u8DEF\u5F84\u3001\u6587\u4EF6\u540D\u548C\u63D2\u4EF6\u7BA1\u7406\u8868\u683C\uFF1B\u666E\u901A\u6B63\u6587\u4E0E\u672A\u77E5\u5C5E\u6027\u4FDD\u6301\u4E0D\u53D8\u3002",
+      "wrench",
+      "warning"
+    );
+    const list = this.contentEl.createDiv({ cls: "workspace-bookmark-diff-list" });
+    for (const change of this.changes) {
+      const row = list.createDiv({ cls: "workspace-bookmark-diff-row" });
+      row.createEl("strong", { text: repairChangeLabel(change.kind) });
+      row.createEl("p", { text: `${change.from} \u2192 ${change.to}` });
+    }
+    const footer = createModalFooter(this.contentEl, "sticky");
+    new import_obsidian.Setting(footer).addButton(
+      (button) => button.setButtonText("\u53D6\u6D88").onClick(() => {
+        this.settled = true;
+        this.onDecision(false);
+        this.close();
+      })
+    ).addButton(
+      (button) => button.setButtonText("\u786E\u8BA4\u4FEE\u590D").setCta().onClick(() => {
         this.settled = true;
         this.onDecision(true);
         this.close();
@@ -9928,6 +10004,18 @@ function configureModeDropdown(dropdown, recipe) {
   for (const mode of modesForAdapter(recipe.adapter)) dropdown.addOption(mode, labels[mode]);
   dropdown.setValue(recipe.openMode);
 }
+function repairChangeLabel(kind) {
+  const labels = {
+    "workspace-name": "Workspace \u540D\u79F0",
+    "window-name": "Window \u540D\u79F0",
+    "title-hint": "\u6807\u9898\u5339\u914D",
+    "content-title": "\u9875\u9762\u6807\u9898",
+    uri: "Obsidian URI",
+    format: "Markdown \u8868\u683C",
+    uuid: "Advanced URI UUID"
+  };
+  return labels[kind];
+}
 function prepareModal(modal, size) {
   modal.modalEl.addClass("workspace-bookmark-modal");
   modal.modalEl.addClass(`workspace-bookmark-modal-${size}`);
@@ -10510,6 +10598,219 @@ function createSettingsSection(container, title, description) {
   return section;
 }
 
+// src/workspace-repair.ts
+var import_yaml2 = __toESM(require_dist(), 1);
+function ensureFrontmatterUuid(source, field, createUuid) {
+  const key = field.trim();
+  if (!key) throw new Error("Advanced URI UUID property \u4E0D\u80FD\u4E3A\u7A7A\u3002");
+  const match = /^(---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/.exec(source);
+  const frontmatter = match ? (0, import_yaml2.parse)(match[2] ?? "") : {};
+  if (!frontmatter || typeof frontmatter !== "object" || Array.isArray(frontmatter)) {
+    throw new Error("\u65E0\u6CD5\u8BFB\u53D6\u7B14\u8BB0 frontmatter\u3002");
+  }
+  const existing = frontmatter[key];
+  if (typeof existing === "string" && existing.trim()) {
+    return { source, uid: existing.trim(), changed: false };
+  }
+  const uid = createUuid();
+  frontmatter[key] = uid;
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
+  const body = (0, import_yaml2.stringify)(frontmatter).trimEnd().replaceAll("\n", eol);
+  const updated = match ? `${match[1]}${body}${match[3]}${source.slice(match[0].length)}` : `---${eol}${body}${eol}---${eol}${eol}${source}`;
+  return { source: updated, uid, changed: true };
+}
+function buildObsidianCaptureUri(input) {
+  const vault = encodeURIComponent(input.vaultName);
+  if (input.uid) {
+    return `obsidian://adv-uri?vault=${vault}&uid=${encodeURIComponent(input.uid)}`;
+  }
+  return `obsidian://open?vault=${vault}&file=${encodeURIComponent(input.filePath)}`;
+}
+function planWorkspaceReferenceRepair(source, context) {
+  const parsed = parseWorkspaceMarkdown(source, { trustedSchemes: context.trustedSchemes });
+  if (!parsed.workspace || parsed.diagnostics.some((item) => item.severity === "error")) {
+    return unchanged(source);
+  }
+  const currentName = fileBasename(context.filePath);
+  const currentDirectory = fileDirectory(context.filePath);
+  const changes = [];
+  let staleSelfName = null;
+  const replacements = /* @__PURE__ */ new Map();
+  for (const recipe of parsed.workspace.windows) {
+    let changedRecipe = structuredClone(recipe);
+    let recipeChanged = false;
+    changedRecipe.contents = changedRecipe.contents.map((content) => {
+      const target = parseObsidianUri(content.url);
+      if (!target || target.kind !== "path" || target.vault !== context.vaultName || fileDirectory(target.filePath) !== currentDirectory) return content;
+      const oldName = fileBasename(target.filePath);
+      const labels = [parsed.workspace.name, recipe.name, recipe.titleHint, content.title];
+      if (!labels.includes(oldName)) return content;
+      staleSelfName ??= oldName;
+      const nextUrl = buildObsidianCaptureUri({
+        vaultName: context.vaultName,
+        filePath: context.filePath,
+        uid: context.uid
+      });
+      if (nextUrl === content.url) return content;
+      recipeChanged = true;
+      changes.push({ kind: "uri", from: content.url, to: nextUrl });
+      return { ...content, url: nextUrl };
+    });
+    if (recipeChanged) replacements.set(recipe.id, changedRecipe);
+  }
+  const syncOldName = staleSelfName && parsed.workspace.name === staleSelfName ? staleSelfName : null;
+  if (syncOldName && syncOldName !== currentName) {
+    changes.push({ kind: "workspace-name", from: syncOldName, to: currentName });
+    for (const recipe of parsed.workspace.windows) {
+      const next = replacements.get(recipe.id) ?? structuredClone(recipe);
+      let changedRecipe = replacements.has(recipe.id);
+      if (next.name === syncOldName) {
+        changes.push({ kind: "window-name", from: syncOldName, to: currentName });
+        next.name = currentName;
+        changedRecipe = true;
+      }
+      if (next.titleHint === syncOldName) {
+        changes.push({ kind: "title-hint", from: syncOldName, to: currentName });
+        next.titleHint = currentName;
+        changedRecipe = true;
+      }
+      next.contents = next.contents.map((content) => {
+        if (content.title !== syncOldName) return content;
+        changes.push({ kind: "content-title", from: syncOldName, to: currentName });
+        changedRecipe = true;
+        return { ...content, title: currentName };
+      });
+      if (changedRecipe) replacements.set(recipe.id, next);
+    }
+  }
+  let updated = replaceRecipes(source, parsed.sections, replacements);
+  if (syncOldName && syncOldName !== currentName) {
+    updated = replaceFrontmatterName(updated, currentName);
+  }
+  const reparsed = parseWorkspaceMarkdown(updated, { trustedSchemes: context.trustedSchemes });
+  if (!reparsed.workspace || reparsed.diagnostics.some((item) => item.severity === "error")) {
+    return unchanged(source);
+  }
+  const formatted = formatWorkspaceMarkdown(updated, reparsed);
+  if (formatted !== updated) changes.push({ kind: "format", from: "\u975E\u89C4\u8303\u8868\u683C", to: "\u89C4\u8303\u8868\u683C" });
+  return { source: formatted, changed: formatted !== source, changes };
+}
+function rewriteObsidianUrisForRename(source, context) {
+  const parsed = parseWorkspaceMarkdown(source, { trustedSchemes: context.trustedSchemes });
+  if (!parsed.workspace || parsed.diagnostics.some((item) => item.severity === "error")) {
+    return unchanged(source);
+  }
+  const changes = [];
+  const replacements = /* @__PURE__ */ new Map();
+  for (const recipe of parsed.workspace.windows) {
+    const next = structuredClone(recipe);
+    next.contents = next.contents.map((content) => {
+      const rewritten = rewriteObsidianUri(content.url, context);
+      if (rewritten === content.url) return content;
+      changes.push({ kind: "uri", from: content.url, to: rewritten });
+      return { ...content, url: rewritten };
+    });
+    if (next.contents.some((content, index) => content.url !== recipe.contents[index]?.url)) {
+      replacements.set(recipe.id, next);
+    }
+  }
+  const oldName = fileBasename(context.oldPath);
+  const newName = fileBasename(context.newPath);
+  const syncIdentity = context.syncWorkspaceIdentity === true && parsed.workspace.name === oldName && oldName !== newName;
+  if (syncIdentity) {
+    changes.push({ kind: "workspace-name", from: oldName, to: newName });
+    for (const recipe of parsed.workspace.windows) {
+      const next = replacements.get(recipe.id) ?? structuredClone(recipe);
+      let recipeChanged = replacements.has(recipe.id);
+      if (next.name === oldName) {
+        changes.push({ kind: "window-name", from: oldName, to: newName });
+        next.name = newName;
+        recipeChanged = true;
+      }
+      if (next.titleHint === oldName) {
+        changes.push({ kind: "title-hint", from: oldName, to: newName });
+        next.titleHint = newName;
+        recipeChanged = true;
+      }
+      next.contents = next.contents.map((content) => {
+        if (content.title !== oldName) return content;
+        changes.push({ kind: "content-title", from: oldName, to: newName });
+        recipeChanged = true;
+        return { ...content, title: newName };
+      });
+      if (recipeChanged) replacements.set(recipe.id, next);
+    }
+  }
+  let updated = replaceRecipes(source, parsed.sections, replacements);
+  if (syncIdentity) updated = replaceFrontmatterName(updated, newName);
+  return { source: updated, changed: updated !== source, changes };
+}
+function rewriteObsidianUri(url, context) {
+  const target = parseObsidianUri(url);
+  if (!target || target.vault !== context.vaultName) return url;
+  if (target.kind === "path" && target.filePath === context.oldPath) {
+    return buildObsidianCaptureUri({
+      vaultName: context.vaultName,
+      filePath: context.newPath
+    });
+  }
+  if (target.kind === "advanced" && target.filePath === context.oldPath) {
+    const parsed = new URL(url);
+    if (target.uid) parsed.searchParams.delete("filepath");
+    else parsed.searchParams.set("filepath", context.newPath);
+    return parsed.toString();
+  }
+  return url;
+}
+function parseObsidianUri(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "obsidian:") return null;
+    const vault = parsed.searchParams.get("vault") ?? "";
+    if (parsed.hostname === "open") {
+      const filePath = parsed.searchParams.get("file");
+      return filePath ? { kind: "path", vault, filePath } : null;
+    }
+    if (parsed.hostname === "adv-uri") {
+      const uid = parsed.searchParams.get("uid") ?? "";
+      const filePath = parsed.searchParams.get("filepath") ?? void 0;
+      return uid || filePath ? { kind: "advanced", vault, uid, ...filePath ? { filePath } : {} } : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+function replaceRecipes(source, sections, replacements) {
+  let updated = source;
+  const targets = sections.filter((section) => section.recipe && replacements.has(section.recipe.id)).sort((left, right) => right.start - left.start);
+  for (const section of targets) {
+    updated = replaceWindowSection(updated, section, replacements.get(section.recipe.id));
+  }
+  return updated;
+}
+function replaceFrontmatterName(source, name) {
+  const match = /^(---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/.exec(source);
+  if (!match) return source;
+  const frontmatter = (0, import_yaml2.parse)(match[2] ?? "");
+  if (!frontmatter || typeof frontmatter !== "object") return source;
+  frontmatter.name = name;
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
+  const body = (0, import_yaml2.stringify)(frontmatter).trimEnd().replaceAll("\n", eol);
+  return `${match[1]}${body}${match[3]}${source.slice(match[0].length)}`;
+}
+function fileBasename(path) {
+  const name = path.split("/").at(-1) ?? path;
+  return name.endsWith(".md") ? name.slice(0, -3) : name;
+}
+function fileDirectory(path) {
+  const index = path.lastIndexOf("/");
+  return index < 0 ? "" : path.slice(0, index);
+}
+function unchanged(source) {
+  return { source, changed: false, changes: [] };
+}
+
 // src/main.ts
 var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
   settings = DEFAULT_SETTINGS;
@@ -10540,6 +10841,13 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
     this.registerEvent(this.app.workspace.on("layout-change", () => this.decorateActiveView()));
     this.registerEvent(this.app.vault.on("create", (file) => {
       if (file instanceof import_obsidian3.TFile) void this.maybeInitializeCreatedWorkspace(file);
+    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (file instanceof import_obsidian3.TFile && file.extension === "md") {
+        void this.handleMarkdownRename(file, oldPath).catch((cause) => {
+          new import_obsidian3.Notice(`Workspace Bookmark\uFF1A\u91CD\u547D\u540D\u5F15\u7528\u540C\u6B65\u5931\u8D25\uFF1A${messageOf2(cause)}`, 8e3);
+        });
+      }
     }));
     this.app.workspace.onLayoutReady(() => {
       this.decorateActiveView();
@@ -10627,6 +10935,11 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       id: "review-duplicate-windows",
       name: "Review duplicate Windows",
       checkCallback: (checking) => this.managedCommand(checking, () => this.reviewDuplicateWindows())
+    });
+    this.addCommand({
+      id: "repair-current-workspace-references",
+      name: "Repair current Workspace references",
+      checkCallback: (checking) => this.managedCommand(checking, () => this.repairCurrentWorkspaceReferences())
     });
     this.addCommand({
       id: "browse-workspaces",
@@ -10785,9 +11098,10 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
     }).open();
   }
   async scanCaptureSnapshot(file, existing) {
-    const [nativeResult, browserResult] = await Promise.all([
+    const [nativeResult, browserResult, obsidianCapture] = await Promise.all([
       this.native.scan(),
-      this.native.browserSnapshot()
+      this.native.browserSnapshot(),
+      this.resolveObsidianCaptureUri(file)
     ]);
     if (!nativeResult.ok || !nativeResult.value) {
       throw new Error(nativeResult.error?.message ?? "\u65E0\u6CD5\u626B\u63CF macOS \u7A97\u53E3\u3002");
@@ -10799,6 +11113,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       browserWindows,
       browserReport,
       file,
+      obsidianCapture,
       existing
     );
     const sourceNotices = captureSourceNotices(browserReport.sources, candidates);
@@ -10816,8 +11131,38 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       scannedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
   }
-  buildCaptureCandidates(nativeWindows, browserWindows, browserReport, activeFile, existing) {
-    const obsidianUrl = `obsidian://open?vault=${encodeURIComponent(this.app.vault.getName())}&file=${encodeURIComponent(activeFile.path)}`;
+  async resolveObsidianCaptureUri(file) {
+    const vaultName = this.app.vault.getName();
+    const fallback = {
+      url: buildObsidianCaptureUri({ vaultName, filePath: file.path }),
+      stable: false
+    };
+    const idField = this.advancedUriIdField();
+    if (!idField) return fallback;
+    let uid = "";
+    try {
+      await this.app.vault.process(file, (source) => {
+        const ensured = ensureFrontmatterUuid(source, idField, () => crypto.randomUUID());
+        uid = ensured.uid;
+        return ensured.source;
+      });
+    } catch {
+      return fallback;
+    }
+    if (!uid) return fallback;
+    return {
+      url: buildObsidianCaptureUri({ vaultName, filePath: file.path, uid }),
+      stable: true
+    };
+  }
+  advancedUriIdField() {
+    const registry = this.app.plugins;
+    if (!registry?.enabledPlugins?.has("obsidian-advanced-uri")) return null;
+    const plugin = registry.getPlugin?.("obsidian-advanced-uri");
+    const configured = plugin?.settings?.idField;
+    return typeof configured === "string" && configured.trim() ? configured.trim() : "id";
+  }
+  buildCaptureCandidates(nativeWindows, browserWindows, browserReport, activeFile, obsidianCapture, existing) {
     const obsidianWindows = nativeWindows.filter((window2) => window2.bundleId === "md.obsidian");
     const activeObsidianWindow = obsidianWindows.find(
       (window2) => window2.title.toLowerCase().includes(activeFile.basename.toLowerCase())
@@ -10836,7 +11181,8 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
         browserIdHint: browserDescriptor?.id,
         browserNameHint: browserDescriptor?.name,
         browserConnected: browserSource?.connected ?? false,
-        obsidianUrl: isActiveObsidian ? obsidianUrl : void 0,
+        obsidianUrl: isActiveObsidian ? obsidianCapture.url : void 0,
+        obsidianUriFallback: isActiveObsidian && !obsidianCapture.stable,
         selected: Boolean(browser || isActiveObsidian),
         selectedTabs: new Set(
           browser?.tabs.filter((tab) => isRestorableBrowserUrl(tab.url)).map((tab) => tab.index) ?? []
@@ -10990,6 +11336,85 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
         new import_obsidian3.Notice(`\u5DF2\u79FB\u9664 ${removed} \u4E2A\u91CD\u590D Window\uFF1B\u7B2C\u4E00\u4EFD\u53CA\u666E\u901A\u6B63\u6587\u5747\u5DF2\u4FDD\u7559\u3002`);
       }
     }).open();
+  }
+  async repairCurrentWorkspaceReferences() {
+    const file = this.getActiveManagedFile();
+    if (!file) return;
+    const originalSource = await this.app.vault.read(file);
+    let planningSource = originalSource;
+    let uid;
+    const preliminaryChanges = [];
+    const idField = this.advancedUriIdField();
+    if (idField) {
+      try {
+        const ensured = ensureFrontmatterUuid(
+          planningSource,
+          idField,
+          () => crypto.randomUUID()
+        );
+        planningSource = ensured.source;
+        uid = ensured.uid;
+        if (ensured.changed) {
+          preliminaryChanges.push({
+            kind: "uuid",
+            from: `\u7F3A\u5C11 ${idField}`,
+            to: `${idField}: ${uid}`
+          });
+        }
+      } catch (cause) {
+        new import_obsidian3.Notice(`Workspace Bookmark\uFF1A${messageOf2(cause)}`, 8e3);
+        return;
+      }
+    }
+    const repair = planWorkspaceReferenceRepair(planningSource, {
+      filePath: file.path,
+      vaultName: this.app.vault.getName(),
+      uid,
+      trustedSchemes: this.settings.trustedSchemes
+    });
+    const changes = [...preliminaryChanges, ...repair.changes];
+    if (repair.source === originalSource || changes.length === 0) {
+      new import_obsidian3.Notice("\u5F53\u524D Workspace \u6CA1\u6709\u53EF\u5B89\u5168\u4FEE\u590D\u7684\u5F15\u7528\u6216\u683C\u5F0F\u95EE\u9898\u3002");
+      return;
+    }
+    const confirmed = await new Promise((resolve) => {
+      new WorkspaceRepairPreviewModal(this.app, changes, resolve).open();
+    });
+    if (!confirmed) return;
+    let applied = false;
+    await this.app.vault.process(file, (currentSource) => {
+      if (currentSource !== originalSource) return currentSource;
+      const verified = this.parse(repair.source);
+      if (!verified.workspace || verified.diagnostics.some((item) => item.severity === "error")) {
+        return currentSource;
+      }
+      applied = true;
+      return repair.source;
+    });
+    new import_obsidian3.Notice(
+      applied ? `\u5DF2\u4FEE\u590D ${changes.length} \u9879 Workspace \u5F15\u7528\u4E0E\u683C\u5F0F\u3002` : "Workspace \u5728\u786E\u8BA4\u671F\u95F4\u53D1\u751F\u53D8\u5316\uFF0C\u672A\u5199\u5165\u3002",
+      8e3
+    );
+  }
+  async handleMarkdownRename(file, oldPath) {
+    if (oldPath === file.path) return;
+    const managedFolder = normalizeManagedFolder(this.settings.managedFolder);
+    const candidates = this.app.vault.getMarkdownFiles().filter(
+      (candidate) => isPathInManagedFolder(candidate.path, managedFolder)
+    );
+    for (const workspaceFile of candidates) {
+      await this.app.vault.process(workspaceFile, (source) => {
+        const parsed = this.parse(source);
+        if (!parsed.managed || !parsed.workspace) return source;
+        return rewriteObsidianUrisForRename(source, {
+          vaultName: this.app.vault.getName(),
+          oldPath,
+          newPath: file.path,
+          syncWorkspaceIdentity: workspaceFile.path === file.path,
+          trustedSchemes: this.settings.trustedSchemes
+        }).source;
+      });
+    }
   }
   async updateManagedHeadingLinks(target, changes) {
     const pathWithoutExtension = target.path.replace(/\.md$/i, "");
@@ -11321,8 +11746,15 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
   }
   async openObsidianUrl(url, openMode, newTab) {
     const parsed = new URL(url);
-    if (parsed.protocol !== "obsidian:" || parsed.hostname !== "open") {
-      throw new Error("\u4EC5\u652F\u6301 obsidian://open URI\u3002");
+    if (parsed.protocol !== "obsidian:") {
+      throw new Error("\u4EC5\u652F\u6301 Obsidian URI\u3002");
+    }
+    if (parsed.hostname === "adv-uri") {
+      window.open(url);
+      return;
+    }
+    if (parsed.hostname !== "open") {
+      throw new Error("\u4EC5\u652F\u6301 obsidian://open \u6216 obsidian://adv-uri URI\u3002");
     }
     if (openMode === "app-default") {
       window.open(url);
@@ -11439,14 +11871,34 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       await this.migrateWorkspaceWithConfirmation(file, source);
       return;
     }
-    let diagnostics = parsed.diagnostics;
-    await this.app.vault.process(file, (currentSource) => {
-      const currentParsed = this.parse(currentSource);
-      diagnostics = currentParsed.diagnostics;
-      if (diagnostics.some((item) => item.severity === "error")) return currentSource;
-      return formatWorkspaceMarkdown(currentSource, currentParsed);
+    const formatted = formatWorkspaceMarkdown(source, parsed);
+    if (formatted === source) {
+      new DiagnosticsModal(this.app, `\u6821\u9A8C\uFF1A${file.path}`, parsed.diagnostics).open();
+      return;
+    }
+    const confirmed = await new Promise((resolve) => {
+      new WorkspaceRepairPreviewModal(this.app, [{
+        kind: "format",
+        from: "\u5F53\u524D\u53D7\u7BA1\u8868\u683C\u683C\u5F0F",
+        to: "Workspace Bookmark 0.2.9 \u89C4\u8303\u683C\u5F0F"
+      }], resolve).open();
     });
-    new DiagnosticsModal(this.app, `\u6821\u9A8C\uFF1A${file.path}`, diagnostics).open();
+    if (!confirmed) return;
+    let applied = false;
+    await this.app.vault.process(file, (currentSource) => {
+      if (currentSource !== source) return currentSource;
+      applied = true;
+      return formatted;
+    });
+    if (!applied) {
+      new import_obsidian3.Notice("Workspace \u5728\u683C\u5F0F\u5316\u786E\u8BA4\u671F\u95F4\u53D1\u751F\u53D8\u5316\uFF0C\u672A\u5199\u5165\u3002");
+      return;
+    }
+    new DiagnosticsModal(
+      this.app,
+      `\u6821\u9A8C\uFF1A${file.path}`,
+      this.parse(formatted).diagnostics
+    ).open();
   }
   async validateCurrentForCli() {
     const file = this.app.workspace.getActiveFile();
