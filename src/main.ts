@@ -30,6 +30,7 @@ import {
   TextPromptModal,
   WindowEditorModal,
   WorkspaceBrowserModal,
+  WorkspaceRepairPreviewModal,
   type RestoreBlockedIssue,
   type RestoreResultItem,
   type SystemDiagnosticsReport,
@@ -77,6 +78,13 @@ import {
   normalizeManagedFolder,
   type WorkspaceBookmarkSettings,
 } from "./settings";
+import {
+  buildObsidianCaptureUri,
+  ensureFrontmatterUuid,
+  planWorkspaceReferenceRepair,
+  rewriteObsidianUrisForRename,
+  type WorkspaceSourceChange,
+} from "./workspace-repair";
 
 export default class WorkspaceBookmarkPlugin extends Plugin {
   settings: WorkspaceBookmarkSettings = DEFAULT_SETTINGS;
@@ -109,6 +117,13 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("layout-change", () => this.decorateActiveView()));
     this.registerEvent(this.app.vault.on("create", (file) => {
       if (file instanceof TFile) void this.maybeInitializeCreatedWorkspace(file);
+    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (file instanceof TFile && file.extension === "md") {
+        void this.handleMarkdownRename(file, oldPath).catch((cause) => {
+          new Notice(`Workspace Bookmark：重命名引用同步失败：${messageOf(cause)}`, 8_000);
+        });
+      }
     }));
     this.app.workspace.onLayoutReady(() => {
       this.decorateActiveView();
@@ -208,6 +223,12 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       name: "Review duplicate Windows",
       checkCallback: (checking) =>
         this.managedCommand(checking, () => this.reviewDuplicateWindows()),
+    });
+    this.addCommand({
+      id: "repair-current-workspace-references",
+      name: "Repair current Workspace references",
+      checkCallback: (checking) =>
+        this.managedCommand(checking, () => this.repairCurrentWorkspaceReferences()),
     });
     this.addCommand({
       id: "browse-workspaces",
@@ -385,9 +406,10 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     file: TFile,
     existing: WindowRecipe[],
   ): Promise<CaptureSnapshot> {
-    const [nativeResult, browserResult] = await Promise.all([
+    const [nativeResult, browserResult, obsidianCapture] = await Promise.all([
       this.native.scan(),
       this.native.browserSnapshot(),
+      this.resolveObsidianCaptureUri(file),
     ]);
     if (!nativeResult.ok || !nativeResult.value) {
       throw new Error(nativeResult.error?.message ?? "无法扫描 macOS 窗口。");
@@ -402,6 +424,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       browserWindows,
       browserReport,
       file,
+      obsidianCapture,
       existing,
     );
     const sourceNotices = captureSourceNotices(browserReport.sources, candidates);
@@ -420,14 +443,47 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     };
   }
 
+  private async resolveObsidianCaptureUri(file: TFile): Promise<ObsidianCaptureTarget> {
+    const vaultName = this.app.vault.getName();
+    const fallback = {
+      url: buildObsidianCaptureUri({ vaultName, filePath: file.path }),
+      stable: false,
+    };
+    const idField = this.advancedUriIdField();
+    if (!idField) return fallback;
+    let uid = "";
+    try {
+      await this.app.vault.process(file, (source) => {
+        const ensured = ensureFrontmatterUuid(source, idField, () => crypto.randomUUID());
+        uid = ensured.uid;
+        return ensured.source;
+      });
+    } catch {
+      return fallback;
+    }
+    if (!uid) return fallback;
+    return {
+      url: buildObsidianCaptureUri({ vaultName, filePath: file.path, uid }),
+      stable: true,
+    };
+  }
+
+  private advancedUriIdField(): string | null {
+    const registry = (this.app as AppWithPluginRegistry).plugins;
+    if (!registry?.enabledPlugins?.has("obsidian-advanced-uri")) return null;
+    const plugin = registry.getPlugin?.("obsidian-advanced-uri") as AdvancedUriRuntime | null;
+    const configured = plugin?.settings?.idField;
+    return typeof configured === "string" && configured.trim() ? configured.trim() : "id";
+  }
+
   private buildCaptureCandidates(
     nativeWindows: NativeWindowSnapshot[],
     browserWindows: BrowserWindowSnapshot[],
     browserReport: BrowserSnapshotReport,
     activeFile: TFile,
+    obsidianCapture: ObsidianCaptureTarget,
     existing: WindowRecipe[],
   ): CaptureCandidate[] {
-    const obsidianUrl = `obsidian://open?vault=${encodeURIComponent(this.app.vault.getName())}&file=${encodeURIComponent(activeFile.path)}`;
     const obsidianWindows = nativeWindows.filter((window) => window.bundleId === "md.obsidian");
     const activeObsidianWindow =
       obsidianWindows.find((window) =>
@@ -453,7 +509,8 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
         browserIdHint: browserDescriptor?.id,
         browserNameHint: browserDescriptor?.name,
         browserConnected: browserSource?.connected ?? false,
-        obsidianUrl: isActiveObsidian ? obsidianUrl : undefined,
+        obsidianUrl: isActiveObsidian ? obsidianCapture.url : undefined,
+        obsidianUriFallback: isActiveObsidian && !obsidianCapture.stable,
         selected: Boolean(browser || isActiveObsidian),
         selectedTabs: new Set(
           browser?.tabs
@@ -632,6 +689,89 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
         new Notice(`已移除 ${removed} 个重复 Window；第一份及普通正文均已保留。`);
       }
     }).open();
+  }
+
+  private async repairCurrentWorkspaceReferences(): Promise<void> {
+    const file = this.getActiveManagedFile();
+    if (!file) return;
+    const originalSource = await this.app.vault.read(file);
+    let planningSource = originalSource;
+    let uid: string | undefined;
+    const preliminaryChanges: WorkspaceSourceChange[] = [];
+    const idField = this.advancedUriIdField();
+    if (idField) {
+      try {
+        const ensured = ensureFrontmatterUuid(
+          planningSource,
+          idField,
+          () => crypto.randomUUID(),
+        );
+        planningSource = ensured.source;
+        uid = ensured.uid;
+        if (ensured.changed) {
+          preliminaryChanges.push({
+            kind: "uuid",
+            from: `缺少 ${idField}`,
+            to: `${idField}: ${uid}`,
+          });
+        }
+      } catch (cause) {
+        new Notice(`Workspace Bookmark：${messageOf(cause)}`, 8_000);
+        return;
+      }
+    }
+    const repair = planWorkspaceReferenceRepair(planningSource, {
+      filePath: file.path,
+      vaultName: this.app.vault.getName(),
+      uid,
+      trustedSchemes: this.settings.trustedSchemes,
+    });
+    const changes = [...preliminaryChanges, ...repair.changes];
+    if (repair.source === originalSource || changes.length === 0) {
+      new Notice("当前 Workspace 没有可安全修复的引用或格式问题。");
+      return;
+    }
+    const confirmed = await new Promise<boolean>((resolve) => {
+      new WorkspaceRepairPreviewModal(this.app, changes, resolve).open();
+    });
+    if (!confirmed) return;
+    let applied = false;
+    await this.app.vault.process(file, (currentSource) => {
+      if (currentSource !== originalSource) return currentSource;
+      const verified = this.parse(repair.source);
+      if (!verified.workspace || verified.diagnostics.some((item) => item.severity === "error")) {
+        return currentSource;
+      }
+      applied = true;
+      return repair.source;
+    });
+    new Notice(
+      applied
+        ? `已修复 ${changes.length} 项 Workspace 引用与格式。`
+        : "Workspace 在确认期间发生变化，未写入。",
+      8_000,
+    );
+  }
+
+  private async handleMarkdownRename(file: TFile, oldPath: string): Promise<void> {
+    if (oldPath === file.path) return;
+    const managedFolder = normalizeManagedFolder(this.settings.managedFolder);
+    const candidates = this.app.vault.getMarkdownFiles().filter((candidate) =>
+      isPathInManagedFolder(candidate.path, managedFolder),
+    );
+    for (const workspaceFile of candidates) {
+      await this.app.vault.process(workspaceFile, (source) => {
+        const parsed = this.parse(source);
+        if (!parsed.managed || !parsed.workspace) return source;
+        return rewriteObsidianUrisForRename(source, {
+          vaultName: this.app.vault.getName(),
+          oldPath,
+          newPath: file.path,
+          syncWorkspaceIdentity: workspaceFile.path === file.path,
+          trustedSchemes: this.settings.trustedSchemes,
+        }).source;
+      });
+    }
   }
 
   private async updateManagedHeadingLinks(
@@ -1016,8 +1156,15 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     newTab: boolean,
   ): Promise<void> {
     const parsed = new URL(url);
-    if (parsed.protocol !== "obsidian:" || parsed.hostname !== "open") {
-      throw new Error("仅支持 obsidian://open URI。");
+    if (parsed.protocol !== "obsidian:") {
+      throw new Error("仅支持 Obsidian URI。");
+    }
+    if (parsed.hostname === "adv-uri") {
+      window.open(url);
+      return;
+    }
+    if (parsed.hostname !== "open") {
+      throw new Error("仅支持 obsidian://open 或 obsidian://adv-uri URI。");
     }
     if (openMode === "app-default") {
       window.open(url);
@@ -1144,14 +1291,34 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       await this.migrateWorkspaceWithConfirmation(file, source);
       return;
     }
-    let diagnostics = parsed.diagnostics;
-    await this.app.vault.process(file, (currentSource) => {
-      const currentParsed = this.parse(currentSource);
-      diagnostics = currentParsed.diagnostics;
-      if (diagnostics.some((item) => item.severity === "error")) return currentSource;
-      return formatWorkspaceMarkdown(currentSource, currentParsed);
+    const formatted = formatWorkspaceMarkdown(source, parsed);
+    if (formatted === source) {
+      new DiagnosticsModal(this.app, `校验：${file.path}`, parsed.diagnostics).open();
+      return;
+    }
+    const confirmed = await new Promise<boolean>((resolve) => {
+      new WorkspaceRepairPreviewModal(this.app, [{
+        kind: "format",
+        from: "当前受管表格格式",
+        to: "Workspace Bookmark 0.2.9 规范格式",
+      }], resolve).open();
     });
-    new DiagnosticsModal(this.app, `校验：${file.path}`, diagnostics).open();
+    if (!confirmed) return;
+    let applied = false;
+    await this.app.vault.process(file, (currentSource) => {
+      if (currentSource !== source) return currentSource;
+      applied = true;
+      return formatted;
+    });
+    if (!applied) {
+      new Notice("Workspace 在格式化确认期间发生变化，未写入。");
+      return;
+    }
+    new DiagnosticsModal(
+      this.app,
+      `校验：${file.path}`,
+      this.parse(formatted).diagnostics,
+    ).open();
   }
 
   private async validateCurrentForCli(): Promise<string> {
@@ -1460,4 +1627,22 @@ function browserDescriptorForBundle(
     return { id: "tabbit", name: "Tabbit" };
   }
   return null;
+}
+
+interface ObsidianCaptureTarget {
+  url: string;
+  stable: boolean;
+}
+
+interface AdvancedUriRuntime {
+  settings?: {
+    idField?: unknown;
+  };
+}
+
+interface AppWithPluginRegistry {
+  plugins?: {
+    enabledPlugins?: Set<string>;
+    getPlugin?: (id: string) => unknown;
+  };
 }

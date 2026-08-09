@@ -16,6 +16,7 @@ export interface CaptureCandidate {
   browserNameHint?: string;
   browserConnected?: boolean;
   obsidianUrl?: string;
+  obsidianUriFallback?: boolean;
   selected: boolean;
   selectedTabs: Set<number>;
   manualUrl: string;

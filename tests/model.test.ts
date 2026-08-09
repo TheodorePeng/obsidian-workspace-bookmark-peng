@@ -196,6 +196,40 @@ custom_property: keep-me
     expect(parsed.workspace?.windows[0]?.contents[0]?.url).toBe("https://example.com/?value=A|B");
   });
 
+  it("accepts Obsidian-aligned one-dash separators without consuming readonly metadata", () => {
+    const source = validMarkdown().replace(
+      "|---:|---|:---:|:---:|---|",
+      "| --: | ---------- | :-: | :-: | ------ |",
+    );
+    const parsed = parseWorkspaceMarkdown(source);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.workspace?.windows[0]).toEqual(recipe);
+  });
+
+  it("reports a malformed contents table without cascading readonly-field errors", () => {
+    const source = validMarkdown().replace(
+      "|---:|---|:---:|:---:|---|",
+      "| invalid | invalid | invalid | invalid | invalid |",
+    );
+    const parsed = parseWorkspaceMarkdown(source);
+    expect(parsed.diagnostics).toEqual([
+      expect.objectContaining({ code: "CONTENTS_TABLE_INVALID" }),
+    ]);
+    expect(parsed.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: "MISSING_FIELD",
+    }));
+  });
+
+  it("selects managed tables by semantic headers rather than the first pipe table", () => {
+    const source = validMarkdown().replace(
+      "### 打开内容\n\n| 顺序 | 页面标题 | 激活 | 固定 | URL |",
+      "### 打开内容\n\n| 备注 | 值 |\n|---|---|\n| 用户 | 正文 |\n\n| 顺序 | 页面标题 | 激活 | 固定 | URL |",
+    );
+    const parsed = parseWorkspaceMarkdown(source);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.workspace?.windows[0]).toEqual(recipe);
+  });
+
   it("repairs V2 tables broken by unescaped pipes", () => {
     const broken = `---
 type: workspace
@@ -273,7 +307,7 @@ tags: []
     expect(formatted.replaceAll("\r\n", "")).not.toContain("\n");
   });
 
-  it("renders and parses a V4 launch-only Window without an content table", () => {
+  it("renders and parses a V4 launch-only Window with an empty contents table", () => {
     const launchOnly = structuredClone(recipe);
     launchOnly.id = "win_01JZX8A9ABCDEFGHJKMNPQRSTW";
     launchOnly.name = "音乐";
@@ -286,7 +320,8 @@ tags: []
     launchOnly.restoreMode = "launch-only";
     launchOnly.contents = [];
     const source = `${createWorkspaceTemplate("ws_01JZX8A9ABCDEFGHJKMNPQRSTV", "测试")}${renderWindowSection(launchOnly)}`;
-    expect(source).not.toContain("### 打开内容");
+    expect(source).toContain("### 打开内容");
+    expect(source).toContain("| 顺序 | 页面标题 | 激活 | 固定 | URL |\n|---:|---|:---:|:---:|---|\n\n### 只读信息");
     const parsed = parseWorkspaceMarkdown(source);
     expect(parsed.diagnostics).toEqual([]);
     expect(parsed.workspace?.windows[0]).toEqual(launchOnly);

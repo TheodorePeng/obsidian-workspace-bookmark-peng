@@ -25,6 +25,7 @@ import {
 import type { CaptureDiff, CaptureOperation } from "./merge";
 import { validateLayout, type Diagnostic } from "./model";
 import type { DuplicateRecipeGroup } from "./recipe-identity";
+import type { WorkspaceSourceChange } from "./workspace-repair";
 
 export class TextPromptModal extends Modal {
   private value = "";
@@ -795,6 +796,14 @@ export class CaptureModal extends Modal {
           });
       }
     }
+    if (candidate.obsidianUriFallback) {
+      const warning = row.createDiv({ cls: "workspace-bookmark-capture-inline-warning" });
+      const warningIcon = warning.createSpan();
+      setIcon(warningIcon, "link-2-off");
+      warning.createSpan({
+        text: "路径型引用，重命名后可能需要修复。启用 Advanced URI 可改用稳定 UUID。",
+      });
+    }
     identity.addEventListener("click", () => {
       if (canSelect) applySelection(!candidate.selected);
     });
@@ -1163,6 +1172,56 @@ export class MigrationPreviewModal extends Modal {
       )
       .addButton((button) =>
         button.setButtonText("确认迁移").setCta().onClick(() => {
+          this.settled = true;
+          this.onDecision(true);
+          this.close();
+        }),
+      );
+  }
+
+  onClose(): void {
+    if (!this.settled) this.onDecision(false);
+  }
+}
+
+export class WorkspaceRepairPreviewModal extends Modal {
+  private settled = false;
+
+  constructor(
+    app: App,
+    private readonly changes: WorkspaceSourceChange[],
+    private readonly onDecision: (confirmed: boolean) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    prepareModal(this, "standard");
+    this.titleEl.setText("修复 Workspace 引用");
+    createModalIntro(
+      this.contentEl,
+      `准备修复 ${this.changes.length} 项`,
+      "只会更新精确匹配的旧路径、文件名和插件管理表格；普通正文与未知属性保持不变。",
+      "wrench",
+      "warning",
+    );
+    const list = this.contentEl.createDiv({ cls: "workspace-bookmark-diff-list" });
+    for (const change of this.changes) {
+      const row = list.createDiv({ cls: "workspace-bookmark-diff-row" });
+      row.createEl("strong", { text: repairChangeLabel(change.kind) });
+      row.createEl("p", { text: `${change.from} → ${change.to}` });
+    }
+    const footer = createModalFooter(this.contentEl, "sticky");
+    new Setting(footer)
+      .addButton((button) =>
+        button.setButtonText("取消").onClick(() => {
+          this.settled = true;
+          this.onDecision(false);
+          this.close();
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("确认修复").setCta().onClick(() => {
           this.settled = true;
           this.onDecision(true);
           this.close();
@@ -1868,6 +1927,19 @@ function configureModeDropdown(
 
 type ModalSize = "compact" | "standard" | "wide";
 type AccentTone = "neutral" | "success" | "warning" | "danger";
+
+function repairChangeLabel(kind: WorkspaceSourceChange["kind"]): string {
+  const labels: Record<WorkspaceSourceChange["kind"], string> = {
+    "workspace-name": "Workspace 名称",
+    "window-name": "Window 名称",
+    "title-hint": "标题匹配",
+    "content-title": "页面标题",
+    uri: "Obsidian URI",
+    format: "Markdown 表格",
+    uuid: "Advanced URI UUID",
+  };
+  return labels[kind];
+}
 
 function prepareModal(modal: Modal, size: ModalSize): void {
   modal.modalEl.addClass("workspace-bookmark-modal");

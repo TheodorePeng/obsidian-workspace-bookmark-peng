@@ -311,16 +311,14 @@ export function renderWindowSection(recipe: WindowRecipe): string {
       `| ${item.order} | ${escapeCell(item.title)} | ${item.active ? "是" : "否"} | ${item.pinned ? "是" : "否"} | \`${escapeCode(item.url)}\` |`,
     )
     .join("\n");
-  const contentSection = restoreMode === "open-content"
-    ? [
-      "",
-      "### 打开内容",
-      "",
-      "| 顺序 | 页面标题 | 激活 | 固定 | URL |",
-      "|---:|---|:---:|:---:|---|",
-      contentRows,
-    ]
-    : [];
+  const contentSection = [
+    "",
+    "### 打开内容",
+    "",
+    "| 顺序 | 页面标题 | 激活 | 固定 | URL |",
+    "|---:|---|:---:|:---:|---|",
+    ...(contentRows ? [contentRows] : []),
+  ];
   return [
     `## ${safeHeading(recipe.appName)} · ${safeHeading(recipe.name)}`,
     "",
@@ -528,18 +526,38 @@ function managedBounds(
         version >= 3 ? /^###\s+可编辑设置\s*$/ : /^###\s+窗口设置\s*$/,
       );
   const contentsHeading = findLine(lines, 1, lines.length, contentsPattern);
-  const settingsTable = findTable(lines, settingsHeading, contentsHeading < 0 ? lines.length : contentsHeading);
+  const readonlyHeading = version >= 3
+    ? findLine(lines, 1, lines.length, /^###\s+只读信息\s*$/)
+    : -1;
+  const settingsEnd = contentsHeading >= 0
+    ? contentsHeading
+    : readonlyHeading >= 0
+      ? readonlyHeading
+      : lines.length;
+  const settingsTable = findTable(
+    lines,
+    settingsHeading,
+    settingsEnd,
+    version === 1
+      ? [["字段", "值"]]
+      : version === 2
+        ? [["属性", "设置"]]
+        : [["设置项", "当前值", "填写提示"]],
+  );
   const contentsTable = contentsHeading < 0
     ? null
-    : findTable(lines, contentsHeading + 1, lines.length);
+    : findTable(
+        lines,
+        contentsHeading + 1,
+        readonlyHeading >= 0 ? readonlyHeading : lines.length,
+        version === 1
+          ? [["顺序", "标题", "URL", "激活", "固定"]]
+          : [["顺序", "页面标题", "激活", "固定", "URL"]],
+      );
   if (!settingsTable || (version < 4 && (contentsHeading < 0 || !contentsTable))) return null;
-  const readonlyStart = contentsTable?.end ?? settingsTable.end;
-  const readonlyHeading = version >= 3
-    ? findLine(lines, readonlyStart, lines.length, /^###\s+只读信息\s*$/)
-    : -1;
   const readonlyTable = readonlyHeading < 0
     ? null
-    : findTable(lines, readonlyHeading + 1, lines.length);
+    : findTable(lines, readonlyHeading + 1, lines.length, [["项", "值"]]);
   const detailsEnd = readonlyHeading < 0
     ? -1
     : findLine(lines, readonlyHeading + 1, lines.length, /^<\/details>\s*$/);
@@ -628,6 +646,10 @@ function parseWindowSection(
   const restoreMode = (RESTORE_MODE_VALUES[restoreModeRaw] ?? restoreModeRaw) as RestoreMode;
   const monitor = (MONITOR_VALUES[monitorRaw] ?? monitorRaw) as MonitorRole;
   const space = spaceRaw === "当前" ? "current" : spaceRaw;
+  const contentsTableInvalid = section.schemaVersion >= 4 && (
+    (bounds.contentsHeading >= 0 && !bounds.contentsTable)
+    || (bounds.contentsHeading < 0 && restoreMode === "open-content")
+  );
 
   const requiredValues: Array<[string, string | undefined]> = [
     ["ID", id],
@@ -699,7 +721,17 @@ function parseWindowSection(
       });
     }
   }
-  validateContents(contents, restoreMode, diagnostics, section, options);
+  if (contentsTableInvalid) {
+    diagnostics.push(error(
+      "CONTENTS_TABLE_INVALID",
+      "“打开内容”表格缺失或格式不正确。请保留标准表头与分隔行。",
+      section.headingLine + Math.max(bounds.contentsHeading, 0) + 1,
+      section.name,
+      "打开内容",
+    ));
+  } else {
+    validateContents(contents, restoreMode, diagnostics, section, options);
+  }
   if (diagnostics.some((item) => item.severity === "error")) return { recipe: null, diagnostics };
   return {
     recipe: {
@@ -893,11 +925,22 @@ function isBooleanCell(value: string): boolean {
   );
 }
 
-function findTable(lines: string[], start: number, end: number): MarkdownTable | null {
+function findTable(
+  lines: string[],
+  start: number,
+  end: number,
+  expectedHeaders: string[][] = [],
+): MarkdownTable | null {
   for (let index = Math.max(0, start); index + 1 < end; index += 1) {
     const header = splitTableRow(lines[index] ?? "");
     const separator = splitTableRow(lines[index + 1] ?? "");
-    if (!header || !separator || !separator.every((cell) => /^:?-{3,}:?$/.test(cell.trim()))) continue;
+    if (
+      !header
+      || !separator
+      || header.length !== separator.length
+      || !separator.every((cell) => /^:?-+:?$/.test(cell.trim()))
+      || (expectedHeaders.length > 0 && !expectedHeaders.some((expected) => tableHeaderMatches(header, expected)))
+    ) continue;
     const rows: string[][] = [];
     let cursor = index + 2;
     for (; cursor < end; cursor += 1) {
@@ -908,6 +951,12 @@ function findTable(lines: string[], start: number, end: number): MarkdownTable |
     return { start: index, end: cursor, header, rows };
   }
   return null;
+}
+
+function tableHeaderMatches(actual: string[], expected: string[]): boolean {
+  return actual.length === expected.length && actual.every(
+    (cell, index) => stripCode(cell).trim() === expected[index],
+  );
 }
 
 function splitTableRow(line: string): string[] | null {

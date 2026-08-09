@@ -72,6 +72,17 @@ describe("Progressive disclosure contract", () => {
     expect(modals).not.toContain("继续处理安全项目");
   });
 
+  it("integrates Advanced URI capture and explicit Workspace reference repair", () => {
+    expect(main).toContain('this.app.vault.on("rename"');
+    expect(main).toContain('id: "repair-current-workspace-references"');
+    expect(main).toContain("ensureFrontmatterUuid");
+    expect(main).toContain("buildObsidianCaptureUri");
+    expect(main).toContain('parsed.hostname === "adv-uri"');
+    expect(modals).toContain("export class WorkspaceRepairPreviewModal");
+    expect(modals).toContain("确认修复");
+    expect(modals).toContain("路径型引用，重命名后可能需要修复");
+  });
+
   it("moves machine-facing editor fields under advanced settings", () => {
     expect(modals).toContain('cls: "workspace-bookmark-advanced-settings"');
     expect(modals).toContain('advanced.createEl("summary", { text: "高级设置" })');
