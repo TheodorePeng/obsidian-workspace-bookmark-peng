@@ -52,6 +52,23 @@ Without those components, the plugin still loads in Obsidian, but capture/restor
    - `Workspace Bookmark: Edit current Window`
    - `Workspace Bookmark: System diagnostics`
 
+## External launch links
+
+Open a managed Workspace note and run one of these commands:
+
+- `Workspace Bookmark: Copy launch URL for current Workspace`
+- `Workspace Bookmark: Copy reliable cold-start command`
+
+The direct URL uses the stable `workspace_id`, so renaming or moving the Markdown note does not invalidate it. Obsidian consumes `vault` while routing; `targetVault` lets the plugin verify the selected Vault after routing:
+
+```text
+obsidian://workspace-bookmark-open?vault=My%20Obsidian&targetVault=My%20Obsidian&id=ws_...
+```
+
+Use the direct URL only while Obsidian is already running. It opens the matching Workspace Markdown in Obsidian before restoring its windows. Community-plugin URI handlers do not exist until Obsidian finishes loading, so a custom plugin URL cannot reliably survive a fully closed-app cold start. For that case, use the reliable cold-start command in Terminal, Raycast, or a macOS Shortcut. It opens the exact Vault and note, waits up to 15 seconds for the plugin CLI, and invokes the restore command once.
+
+The standard `obsidian://open` and Advanced URI links only open notes. They do not execute the Workspace Bookmark restore workflow by themselves.
+
 ## Development
 
 ```bash
@@ -127,6 +144,23 @@ BRAT 不会安装本地 macOS 可执行程序或浏览器扩展。若要完整�
    - `Workspace Bookmark: Browse workspaces`
    - `Workspace Bookmark: Edit current Window`
    - `Workspace Bookmark: System diagnostics`
+
+## 从 Obsidian 外部启动 Workspace
+
+打开一份受管 Workspace 文档，然后运行以下命令之一：
+
+- `Workspace Bookmark: Copy launch URL for current Workspace`
+- `Workspace Bookmark: Copy reliable cold-start command`
+
+直接链接使用稳定的 `workspace_id`，因此重命名或移动 Markdown 不会使链接失效。Obsidian 会在路由时消费 `vault` 参数，`targetVault` 用于插件加载后再次校验目标 Vault：
+
+```text
+obsidian://workspace-bookmark-open?vault=My%20Obsidian&targetVault=My%20Obsidian&id=ws_...
+```
+
+仅在 Obsidian 已经运行时使用直接 URL。插件会先在 Obsidian 中打开对应 Workspace Markdown，再恢复其中的窗口。社区插件的 URI Handler 只有在 Obsidian 完成加载后才存在，因此自定义插件 URL 无法可靠穿过“应用完全关闭”的冷启动；这种情况请把“可靠冷启动命令”放入 Terminal、Raycast 或 macOS 快捷指令。它会先打开准确的 Vault 和笔记，最长等待插件 CLI 15 秒，然后只执行一次恢复。
+
+标准 `obsidian://open` 和 Advanced URI 只负责打开笔记，本身不会执行 Workspace Bookmark 的窗口恢复流程。
 
 ## 开发
 

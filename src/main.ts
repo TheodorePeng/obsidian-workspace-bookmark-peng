@@ -21,6 +21,7 @@ import {
   ConfirmSchemesModal,
   CaptureModal,
   CaptureDiffModal,
+  CopyableTextModal,
   DiagnosticsModal,
   DuplicateRepairModal,
   MigrationPreviewModal,
@@ -85,6 +86,14 @@ import {
   rewriteObsidianUrisForRename,
   type WorkspaceSourceChange,
 } from "./workspace-repair";
+import {
+  buildColdStartCommand,
+  buildWorkspaceLaunchUri,
+  parseLegacyWorkspaceLaunchParams,
+  parseWorkspaceLaunchParams,
+  openWorkspaceForViewingAndRestore,
+  type WorkspaceLaunchTarget,
+} from "./external-launch";
 
 export default class WorkspaceBookmarkPlugin extends Plugin {
   settings: WorkspaceBookmarkSettings = DEFAULT_SETTINGS;
@@ -188,6 +197,18 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
         }),
     });
     this.addCommand({
+      id: "copy-current-workspace-launch-url",
+      name: "Copy launch URL for current Workspace",
+      checkCallback: (checking) =>
+        this.launchableWorkspaceCommand(checking, () => this.copyCurrentWorkspaceLaunchUrl()),
+    });
+    this.addCommand({
+      id: "copy-current-workspace-cold-start-command",
+      name: "Copy reliable cold-start command",
+      checkCallback: (checking) =>
+        this.launchableWorkspaceCommand(checking, () => this.copyCurrentWorkspaceColdStartCommand()),
+    });
+    this.addCommand({
       id: "open-current-window",
       name: "Open current Window",
       editorCheckCallback: (checking, editor, context) => {
@@ -245,17 +266,28 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
   }
 
   private registerExternalEntrypoints(): void {
-    this.registerObsidianProtocolHandler("workspace-bookmark", async (params) => {
-      const action = params.action;
-      if (action === "capture") {
-        await this.captureCurrentWorkspace();
-      } else if (action === "open-current") {
-        await this.openCurrentWorkspace();
-      } else if (action === "open" && isStableId(params.id, "ws_")) {
-        await this.openWorkspaceById(params.id);
-      } else {
-        new Notice("Workspace Bookmark：无效或不完整的 URI 参数。");
+    this.registerObsidianProtocolHandler("workspace-bookmark-open", async (params) => {
+      const parsed = parseWorkspaceLaunchParams(params, this.app.vault.getName());
+      if (!parsed.ok) {
+        new Notice(`Workspace Bookmark：${parsed.message}`, 8_000);
+        return;
       }
+      await this.openWorkspaceById(parsed.workspaceId);
+    });
+    this.registerObsidianProtocolHandler("workspace-bookmark-capture", async () => {
+      await this.captureCurrentWorkspace();
+    });
+    this.registerObsidianProtocolHandler("workspace-bookmark-open-current", async () => {
+      await this.openCurrentWorkspace();
+    });
+    this.registerObsidianProtocolHandler("workspace-bookmark", async (params) => {
+      const parsed = parseLegacyWorkspaceLaunchParams(params, this.app.vault.getName());
+      if (!parsed.ok) {
+        new Notice(`Workspace Bookmark：${parsed.message} 请使用命令重新复制启动链接。`, 8_000);
+        return;
+      }
+      new Notice("Workspace Bookmark：已兼容旧版启动链接，建议重新复制新版链接。", 6_000);
+      await this.openWorkspaceById(parsed.workspaceId);
     });
 
     this.registerCliHandler(
@@ -298,6 +330,80 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     return available;
   }
 
+  private launchableWorkspaceCommand(
+    checking: boolean,
+    callback: () => void | Promise<void>,
+  ): boolean {
+    const file = this.app.workspace.getActiveFile();
+    const id = file instanceof TFile
+      ? String(this.app.metadataCache.getFileCache(file)?.frontmatter?.workspace_id ?? "")
+      : "";
+    const available = file instanceof TFile
+      && this.isManagedWorkspace(file)
+      && isStableId(id, "ws_");
+    if (!checking && available) void callback();
+    return available;
+  }
+
+  private async copyCurrentWorkspaceLaunchUrl(): Promise<void> {
+    const file = this.getActiveManagedFile();
+    if (!file) return;
+    await this.copyWorkspaceLaunchUrl(file);
+  }
+
+  private async copyCurrentWorkspaceColdStartCommand(): Promise<void> {
+    const file = this.getActiveManagedFile();
+    if (!file) return;
+    const launch = await this.getWorkspaceLaunchTarget(file);
+    if (!launch) return;
+    await this.copyTextWithFallback(
+      "可靠冷启动命令",
+      buildColdStartCommand(launch.target),
+      `已复制“${launch.name}”的可靠冷启动命令。`,
+    );
+  }
+
+  private async copyWorkspaceLaunchUrl(file: TFile): Promise<void> {
+    const launch = await this.getWorkspaceLaunchTarget(file);
+    if (!launch) return;
+    await this.copyTextWithFallback(
+      "Workspace 启动链接",
+      buildWorkspaceLaunchUri(launch.target),
+      `已复制“${launch.name}”的启动链接 · ${launch.target.vaultName}。Obsidian 关闭时请使用可靠冷启动命令。`,
+    );
+  }
+
+  private async getWorkspaceLaunchTarget(
+    file: TFile,
+  ): Promise<{ name: string; target: WorkspaceLaunchTarget } | null> {
+    if (!this.isManagedWorkspace(file)) {
+      new Notice("当前文档不是受管 Workspace。");
+      return null;
+    }
+    const parsed = this.parse(await this.app.vault.cachedRead(file));
+    if (!parsed.managed || !parsed.workspace || !isStableId(parsed.workspace.id, "ws_")) {
+      new Notice("当前 Workspace 缺少合法的 workspace_id，无法生成启动入口。", 8_000);
+      return null;
+    }
+    return {
+      name: parsed.workspace.name.trim() || file.basename,
+      target: {
+        vaultName: this.app.vault.getName(),
+        workspaceId: parsed.workspace.id,
+        filePath: file.path,
+      },
+    };
+  }
+
+  private async copyTextWithFallback(title: string, text: string, success: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      new Notice(success);
+    } catch {
+      new CopyableTextModal(this.app, title, text).open();
+    }
+  }
+
   private decorateActiveView(): void {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view) return;
@@ -309,6 +415,9 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
         }),
         view.addAction("scan-search", "Capture current Workspace", () => {
           if (this.isManagedWorkspace(view.file)) void this.captureCurrentWorkspace();
+        }),
+        view.addAction("link-2", "Copy Workspace launch URL", () => {
+          if (this.isManagedWorkspace(view.file)) void this.copyWorkspaceLaunchUrl(view.file);
         }),
       ];
       this.decoratedViews.set(view, actions);
@@ -816,7 +925,12 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       new Notice(`未找到 Workspace：${id}`);
       return false;
     }
-    return this.openWorkspaceFile(item.file);
+    return openWorkspaceForViewingAndRestore(
+      async () => {
+        await this.app.workspace.getLeaf(false).openFile(item.file);
+      },
+      () => this.openWorkspaceFile(item.file),
+    );
   }
 
   private async openWorkspaceFile(file: TFile): Promise<boolean> {
@@ -1300,7 +1414,7 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
       new WorkspaceRepairPreviewModal(this.app, [{
         kind: "format",
         from: "当前受管表格格式",
-        to: "Workspace Bookmark 0.2.9 规范格式",
+        to: "Workspace Bookmark 0.2.12 规范格式",
       }], resolve).open();
     });
     if (!confirmed) return;
@@ -1337,6 +1451,8 @@ export default class WorkspaceBookmarkPlugin extends Plugin {
     const items = await this.collectWorkspaceItems();
     new WorkspaceBrowserModal(this.app, items, async (item) => {
       await this.openWorkspaceFile(item.file);
+    }, async (item) => {
+      await this.copyWorkspaceLaunchUrl(item.file);
     }).open();
   }
 

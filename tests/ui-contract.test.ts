@@ -40,6 +40,18 @@ describe("Obsidian modal shell", () => {
 });
 
 describe("Progressive disclosure contract", () => {
+  it("exposes stable Workspace launch links from commands, views, and the library", () => {
+    expect(main).toContain('id: "copy-current-workspace-launch-url"');
+    expect(main).toContain('id: "copy-current-workspace-cold-start-command"');
+    expect(main).toContain("this.launchableWorkspaceCommand(checking");
+    expect(main).toContain('this.registerObsidianProtocolHandler("workspace-bookmark-open"');
+    expect(main).toContain('this.registerObsidianProtocolHandler("workspace-bookmark-capture"');
+    expect(main).toContain('this.registerObsidianProtocolHandler("workspace-bookmark-open-current"');
+    expect(main).toContain('view.addAction("link-2", "Copy Workspace launch URL"');
+    expect(modals).toContain('setTooltip("复制启动链接")');
+    expect(modals).toContain("export class CopyableTextModal");
+  });
+
   it("uses compact checkbox rows, browser-only icon modes, and collapsible browser tabs", () => {
     expect(modals).toContain('cls: "workspace-bookmark-window-row"');
     expect(modals).toContain('cls: "workspace-bookmark-capture-select"');

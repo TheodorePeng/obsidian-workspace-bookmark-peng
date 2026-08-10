@@ -74,6 +74,62 @@ export class TextPromptModal extends Modal {
   }
 }
 
+export class CopyableTextModal extends Modal {
+  constructor(
+    app: App,
+    private readonly heading: string,
+    private readonly value: string,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    prepareModal(this, "compact");
+    this.titleEl.setText(this.heading);
+    createModalIntro(
+      this.contentEl,
+      "自动复制失败",
+      "请手动复制下方内容。插件不会执行这段命令。",
+      "clipboard-copy",
+      "warning",
+    );
+    const input = this.contentEl.createEl("textarea", {
+      cls: "workspace-bookmark-copyable-text",
+      attr: {
+        readonly: "true",
+        "aria-label": this.heading,
+      },
+    });
+    input.value = this.value;
+    input.rows = Math.min(12, Math.max(4, this.value.split("\n").length));
+    input.addEventListener("focus", () => input.select());
+    const footer = createModalFooter(this.contentEl);
+    new Setting(footer)
+      .addButton((button) => button.setButtonText("关闭").onClick(() => this.close()))
+      .addButton((button) =>
+        button
+          .setButtonText("再次复制")
+          .setIcon("copy")
+          .setCta()
+          .onClick(async () => {
+            try {
+              await navigator.clipboard.writeText(this.value);
+              new Notice("已复制。");
+              this.close();
+            } catch {
+              input.focus();
+              input.select();
+              new Notice("仍无法访问剪贴板，请按 ⌘C 手动复制。", 6_000);
+            }
+          }),
+      );
+    window.setTimeout(() => {
+      input.focus();
+      input.select();
+    });
+  }
+}
+
 export class DiagnosticsModal extends Modal {
   constructor(
     app: App,
@@ -441,6 +497,7 @@ export class WorkspaceBrowserModal extends Modal {
     app: App,
     private readonly items: WorkspaceSearchItem[],
     private readonly onOpenWorkspace: (item: WorkspaceSearchItem) => void | Promise<void>,
+    private readonly onCopyLaunchUrl: (item: WorkspaceSearchItem) => void | Promise<void>,
   ) {
     super(app);
   }
@@ -486,6 +543,12 @@ export class WorkspaceBrowserModal extends Modal {
           });
         }
         const actions = row.createDiv({ cls: "workspace-bookmark-row-actions" });
+        new ButtonComponent(actions)
+          .setIcon("link-2")
+          .setTooltip("复制启动链接")
+          .onClick(async () => {
+            await this.onCopyLaunchUrl(item);
+          });
         new ButtonComponent(actions)
           .setButtonText("笔记")
           .setIcon("file-text")
