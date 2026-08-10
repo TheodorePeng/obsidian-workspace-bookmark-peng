@@ -8499,6 +8499,52 @@ var TextPromptModal = class extends import_obsidian.Modal {
     this.close();
   }
 };
+var CopyableTextModal = class extends import_obsidian.Modal {
+  constructor(app, heading, value) {
+    super(app);
+    this.heading = heading;
+    this.value = value;
+  }
+  onOpen() {
+    prepareModal(this, "compact");
+    this.titleEl.setText(this.heading);
+    createModalIntro(
+      this.contentEl,
+      "\u81EA\u52A8\u590D\u5236\u5931\u8D25",
+      "\u8BF7\u624B\u52A8\u590D\u5236\u4E0B\u65B9\u5185\u5BB9\u3002\u63D2\u4EF6\u4E0D\u4F1A\u6267\u884C\u8FD9\u6BB5\u547D\u4EE4\u3002",
+      "clipboard-copy",
+      "warning"
+    );
+    const input = this.contentEl.createEl("textarea", {
+      cls: "workspace-bookmark-copyable-text",
+      attr: {
+        readonly: "true",
+        "aria-label": this.heading
+      }
+    });
+    input.value = this.value;
+    input.rows = Math.min(12, Math.max(4, this.value.split("\n").length));
+    input.addEventListener("focus", () => input.select());
+    const footer = createModalFooter(this.contentEl);
+    new import_obsidian.Setting(footer).addButton((button) => button.setButtonText("\u5173\u95ED").onClick(() => this.close())).addButton(
+      (button) => button.setButtonText("\u518D\u6B21\u590D\u5236").setIcon("copy").setCta().onClick(async () => {
+        try {
+          await navigator.clipboard.writeText(this.value);
+          new import_obsidian.Notice("\u5DF2\u590D\u5236\u3002");
+          this.close();
+        } catch {
+          input.focus();
+          input.select();
+          new import_obsidian.Notice("\u4ECD\u65E0\u6CD5\u8BBF\u95EE\u526A\u8D34\u677F\uFF0C\u8BF7\u6309 \u2318C \u624B\u52A8\u590D\u5236\u3002", 6e3);
+        }
+      })
+    );
+    window.setTimeout(() => {
+      input.focus();
+      input.select();
+    });
+  }
+};
 var DiagnosticsModal = class extends import_obsidian.Modal {
   constructor(app, title, diagnostics) {
     super(app);
@@ -8766,10 +8812,11 @@ var ConfirmSchemesModal = class extends import_obsidian.Modal {
   }
 };
 var WorkspaceBrowserModal = class extends import_obsidian.Modal {
-  constructor(app, items, onOpenWorkspace) {
+  constructor(app, items, onOpenWorkspace, onCopyLaunchUrl) {
     super(app);
     this.items = items;
     this.onOpenWorkspace = onOpenWorkspace;
+    this.onCopyLaunchUrl = onCopyLaunchUrl;
   }
   onOpen() {
     prepareModal(this, "wide");
@@ -8812,6 +8859,9 @@ var WorkspaceBrowserModal = class extends import_obsidian.Modal {
           });
         }
         const actions = row.createDiv({ cls: "workspace-bookmark-row-actions" });
+        new import_obsidian.ButtonComponent(actions).setIcon("link-2").setTooltip("\u590D\u5236\u542F\u52A8\u94FE\u63A5").onClick(async () => {
+          await this.onCopyLaunchUrl(item);
+        });
         new import_obsidian.ButtonComponent(actions).setButtonText("\u7B14\u8BB0").setIcon("file-text").onClick(async () => {
           await this.app.workspace.getLeaf(false).openFile(item.file);
           this.close();
@@ -10811,6 +10861,116 @@ function unchanged(source) {
   return { source, changed: false, changes: [] };
 }
 
+// src/external-launch.ts
+async function openWorkspaceForViewingAndRestore(openWorkspaceNote, restoreWorkspace) {
+  await openWorkspaceNote();
+  return restoreWorkspace();
+}
+function buildWorkspaceLaunchUri(target) {
+  validateTarget(target);
+  const vaultName = encodeURIComponent(target.vaultName);
+  return `obsidian://workspace-bookmark-open?vault=${vaultName}&targetVault=${vaultName}&id=${encodeURIComponent(target.workspaceId)}`;
+}
+function parseWorkspaceLaunchParams(params, currentVaultName) {
+  const id = typeof params.id === "string" ? params.id : "";
+  if (!id) {
+    return { ok: false, code: "missing-id", message: "\u542F\u52A8\u94FE\u63A5\u7F3A\u5C11 Workspace ID\u3002" };
+  }
+  if (!isStableId(id, "ws_")) {
+    return {
+      ok: false,
+      code: "invalid-id",
+      message: "Workspace ID \u5FC5\u987B\u4F7F\u7528 ws_<ULID> \u683C\u5F0F\u3002"
+    };
+  }
+  const explicitVaultName = typeof params.targetVault === "string" ? params.targetVault : typeof params.vault === "string" ? params.vault : null;
+  const vaultName = explicitVaultName ?? currentVaultName;
+  if (!vaultName || containsControlCharacters(vaultName)) {
+    return { ok: false, code: "invalid-vault", message: "\u76EE\u6807 Vault \u540D\u79F0\u65E0\u6548\u3002" };
+  }
+  if (vaultName !== currentVaultName) {
+    return {
+      ok: false,
+      code: "vault-mismatch",
+      message: `\u6B64\u94FE\u63A5\u5C5E\u4E8E Vault\u201C${vaultName}\u201D\uFF0C\u5F53\u524D Vault \u4E3A\u201C${currentVaultName}\u201D\u3002\u8BF7\u4F7F\u7528\u53EF\u9760\u51B7\u542F\u52A8\u547D\u4EE4\u3002`
+    };
+  }
+  return { ok: true, workspaceId: id, vaultName };
+}
+function parseLegacyWorkspaceLaunchParams(params, currentVaultName) {
+  const id = typeof params.id === "string" ? params.id : "";
+  if (!id) {
+    return { ok: false, code: "missing-id", message: "\u65E7\u7248\u542F\u52A8\u94FE\u63A5\u7F3A\u5C11 Workspace ID\u3002" };
+  }
+  if (!isStableId(id, "ws_")) {
+    return {
+      ok: false,
+      code: "invalid-id",
+      message: "Workspace ID \u5FC5\u987B\u4F7F\u7528 ws_<ULID> \u683C\u5F0F\u3002"
+    };
+  }
+  const requestedVault = typeof params.vault === "string" ? params.vault : "";
+  if (requestedVault && requestedVault !== currentVaultName) {
+    return {
+      ok: false,
+      code: "vault-mismatch",
+      message: `\u6B64\u65E7\u94FE\u63A5\u5C5E\u4E8E Vault\u201C${requestedVault}\u201D\uFF0C\u5F53\u524D Vault \u4E3A\u201C${currentVaultName}\u201D\u3002\u8BF7\u91CD\u65B0\u590D\u5236\u65B0\u7248\u94FE\u63A5\u3002`
+    };
+  }
+  return { ok: true, workspaceId: id, vaultName: currentVaultName };
+}
+function buildColdStartCommand(target) {
+  validateTarget(target);
+  const vaultArgument = shellQuote(target.vaultName);
+  const idArgument = shellQuote(target.workspaceId);
+  const noteUri = `obsidian://open?vault=${encodeURIComponent(target.vaultName)}&file=${encodeURIComponent(target.filePath)}`;
+  return [
+    "(",
+    'workspace_bookmark_cli="$(command -v obsidian 2>/dev/null || true)"',
+    'if [ -z "$workspace_bookmark_cli" ] && [ -x "/Applications/Obsidian.app/Contents/MacOS/obsidian" ]; then',
+    '  workspace_bookmark_cli="/Applications/Obsidian.app/Contents/MacOS/obsidian"',
+    "fi",
+    'if [ -z "$workspace_bookmark_cli" ]; then',
+    '  echo "Workspace Bookmark: \u627E\u4E0D\u5230 Obsidian CLI\u3002" >&2',
+    "  exit 1",
+    "fi",
+    `/usr/bin/open ${shellQuote(noteUri)}`,
+    "workspace_bookmark_ready=0",
+    "workspace_bookmark_attempt=0",
+    'while [ "$workspace_bookmark_attempt" -lt 60 ]; do',
+    `  if "$workspace_bookmark_cli" vault=${vaultArgument} help workspace-bookmark:open >/dev/null 2>&1; then`,
+    "    workspace_bookmark_ready=1",
+    "    break",
+    "  fi",
+    "  workspace_bookmark_attempt=$((workspace_bookmark_attempt + 1))",
+    "  /bin/sleep 0.25",
+    "done",
+    'if [ "$workspace_bookmark_ready" -ne 1 ]; then',
+    '  echo "Workspace Bookmark: Obsidian \u6216\u63D2\u4EF6\u672A\u5728 15 \u79D2\u5185\u5C31\u7EEA\u3002" >&2',
+    "  exit 1",
+    "fi",
+    `"$workspace_bookmark_cli" vault=${vaultArgument} workspace-bookmark:open id=${idArgument}`,
+    ")"
+  ].join("\n");
+}
+function validateTarget(target) {
+  if (!isStableId(target.workspaceId, "ws_")) {
+    throw new Error("workspaceId \u5FC5\u987B\u4F7F\u7528 ws_<ULID> \u683C\u5F0F\u3002");
+  }
+  if (!target.vaultName.trim() || containsControlCharacters(target.vaultName)) {
+    throw new Error("vaultName \u4E0D\u80FD\u4E3A\u7A7A\u6216\u5305\u542B\u6362\u884C/NUL\u3002");
+  }
+  if (!target.filePath.endsWith(".md") || target.filePath.startsWith("/") || target.filePath.includes("\\") || target.filePath.split("/").some((segment) => segment === "..") || containsControlCharacters(target.filePath)) {
+    throw new Error("filePath \u5FC5\u987B\u662F Vault \u5185\u90E8\u7684 Markdown \u8DEF\u5F84\u3002");
+  }
+}
+function containsControlCharacters(value) {
+  return /[\0\r\n]/.test(value);
+}
+function shellQuote(value) {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 // src/main.ts
 var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
   settings = DEFAULT_SETTINGS;
@@ -10902,6 +11062,16 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       })
     });
     this.addCommand({
+      id: "copy-current-workspace-launch-url",
+      name: "Copy launch URL for current Workspace",
+      checkCallback: (checking) => this.launchableWorkspaceCommand(checking, () => this.copyCurrentWorkspaceLaunchUrl())
+    });
+    this.addCommand({
+      id: "copy-current-workspace-cold-start-command",
+      name: "Copy reliable cold-start command",
+      checkCallback: (checking) => this.launchableWorkspaceCommand(checking, () => this.copyCurrentWorkspaceColdStartCommand())
+    });
+    this.addCommand({
       id: "open-current-window",
       name: "Open current Window",
       editorCheckCallback: (checking, editor, context) => {
@@ -10955,17 +11125,28 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
     });
   }
   registerExternalEntrypoints() {
-    this.registerObsidianProtocolHandler("workspace-bookmark", async (params) => {
-      const action = params.action;
-      if (action === "capture") {
-        await this.captureCurrentWorkspace();
-      } else if (action === "open-current") {
-        await this.openCurrentWorkspace();
-      } else if (action === "open" && isStableId(params.id, "ws_")) {
-        await this.openWorkspaceById(params.id);
-      } else {
-        new import_obsidian3.Notice("Workspace Bookmark\uFF1A\u65E0\u6548\u6216\u4E0D\u5B8C\u6574\u7684 URI \u53C2\u6570\u3002");
+    this.registerObsidianProtocolHandler("workspace-bookmark-open", async (params) => {
+      const parsed = parseWorkspaceLaunchParams(params, this.app.vault.getName());
+      if (!parsed.ok) {
+        new import_obsidian3.Notice(`Workspace Bookmark\uFF1A${parsed.message}`, 8e3);
+        return;
       }
+      await this.openWorkspaceById(parsed.workspaceId);
+    });
+    this.registerObsidianProtocolHandler("workspace-bookmark-capture", async () => {
+      await this.captureCurrentWorkspace();
+    });
+    this.registerObsidianProtocolHandler("workspace-bookmark-open-current", async () => {
+      await this.openCurrentWorkspace();
+    });
+    this.registerObsidianProtocolHandler("workspace-bookmark", async (params) => {
+      const parsed = parseLegacyWorkspaceLaunchParams(params, this.app.vault.getName());
+      if (!parsed.ok) {
+        new import_obsidian3.Notice(`Workspace Bookmark\uFF1A${parsed.message} \u8BF7\u4F7F\u7528\u547D\u4EE4\u91CD\u65B0\u590D\u5236\u542F\u52A8\u94FE\u63A5\u3002`, 8e3);
+        return;
+      }
+      new import_obsidian3.Notice("Workspace Bookmark\uFF1A\u5DF2\u517C\u5BB9\u65E7\u7248\u542F\u52A8\u94FE\u63A5\uFF0C\u5EFA\u8BAE\u91CD\u65B0\u590D\u5236\u65B0\u7248\u94FE\u63A5\u3002", 6e3);
+      await this.openWorkspaceById(parsed.workspaceId);
     });
     this.registerCliHandler(
       "workspace-bookmark:open",
@@ -11005,6 +11186,65 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
     if (!checking && available) void callback();
     return available;
   }
+  launchableWorkspaceCommand(checking, callback) {
+    const file = this.app.workspace.getActiveFile();
+    const id = file instanceof import_obsidian3.TFile ? String(this.app.metadataCache.getFileCache(file)?.frontmatter?.workspace_id ?? "") : "";
+    const available = file instanceof import_obsidian3.TFile && this.isManagedWorkspace(file) && isStableId(id, "ws_");
+    if (!checking && available) void callback();
+    return available;
+  }
+  async copyCurrentWorkspaceLaunchUrl() {
+    const file = this.getActiveManagedFile();
+    if (!file) return;
+    await this.copyWorkspaceLaunchUrl(file);
+  }
+  async copyCurrentWorkspaceColdStartCommand() {
+    const file = this.getActiveManagedFile();
+    if (!file) return;
+    const launch = await this.getWorkspaceLaunchTarget(file);
+    if (!launch) return;
+    await this.copyTextWithFallback(
+      "\u53EF\u9760\u51B7\u542F\u52A8\u547D\u4EE4",
+      buildColdStartCommand(launch.target),
+      `\u5DF2\u590D\u5236\u201C${launch.name}\u201D\u7684\u53EF\u9760\u51B7\u542F\u52A8\u547D\u4EE4\u3002`
+    );
+  }
+  async copyWorkspaceLaunchUrl(file) {
+    const launch = await this.getWorkspaceLaunchTarget(file);
+    if (!launch) return;
+    await this.copyTextWithFallback(
+      "Workspace \u542F\u52A8\u94FE\u63A5",
+      buildWorkspaceLaunchUri(launch.target),
+      `\u5DF2\u590D\u5236\u201C${launch.name}\u201D\u7684\u542F\u52A8\u94FE\u63A5 \xB7 ${launch.target.vaultName}\u3002Obsidian \u5173\u95ED\u65F6\u8BF7\u4F7F\u7528\u53EF\u9760\u51B7\u542F\u52A8\u547D\u4EE4\u3002`
+    );
+  }
+  async getWorkspaceLaunchTarget(file) {
+    if (!this.isManagedWorkspace(file)) {
+      new import_obsidian3.Notice("\u5F53\u524D\u6587\u6863\u4E0D\u662F\u53D7\u7BA1 Workspace\u3002");
+      return null;
+    }
+    const parsed = this.parse(await this.app.vault.cachedRead(file));
+    if (!parsed.managed || !parsed.workspace || !isStableId(parsed.workspace.id, "ws_")) {
+      new import_obsidian3.Notice("\u5F53\u524D Workspace \u7F3A\u5C11\u5408\u6CD5\u7684 workspace_id\uFF0C\u65E0\u6CD5\u751F\u6210\u542F\u52A8\u5165\u53E3\u3002", 8e3);
+      return null;
+    }
+    return {
+      name: parsed.workspace.name.trim() || file.basename,
+      target: {
+        vaultName: this.app.vault.getName(),
+        workspaceId: parsed.workspace.id,
+        filePath: file.path
+      }
+    };
+  }
+  async copyTextWithFallback(title, text, success) {
+    try {
+      await navigator.clipboard.writeText(text);
+      new import_obsidian3.Notice(success);
+    } catch {
+      new CopyableTextModal(this.app, title, text).open();
+    }
+  }
   decorateActiveView() {
     const view = this.app.workspace.getActiveViewOfType(import_obsidian3.MarkdownView);
     if (!view) return;
@@ -11016,6 +11256,9 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
         }),
         view.addAction("scan-search", "Capture current Workspace", () => {
           if (this.isManagedWorkspace(view.file)) void this.captureCurrentWorkspace();
+        }),
+        view.addAction("link-2", "Copy Workspace launch URL", () => {
+          if (this.isManagedWorkspace(view.file)) void this.copyWorkspaceLaunchUrl(view.file);
         })
       ];
       this.decoratedViews.set(view, actions);
@@ -11453,7 +11696,12 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice(`\u672A\u627E\u5230 Workspace\uFF1A${id}`);
       return false;
     }
-    return this.openWorkspaceFile(item.file);
+    return openWorkspaceForViewingAndRestore(
+      async () => {
+        await this.app.workspace.getLeaf(false).openFile(item.file);
+      },
+      () => this.openWorkspaceFile(item.file)
+    );
   }
   async openWorkspaceFile(file) {
     const source = await this.app.vault.read(file);
@@ -11880,7 +12128,7 @@ var WorkspaceBookmarkPlugin = class extends import_obsidian3.Plugin {
       new WorkspaceRepairPreviewModal(this.app, [{
         kind: "format",
         from: "\u5F53\u524D\u53D7\u7BA1\u8868\u683C\u683C\u5F0F",
-        to: "Workspace Bookmark 0.2.9 \u89C4\u8303\u683C\u5F0F"
+        to: "Workspace Bookmark 0.2.12 \u89C4\u8303\u683C\u5F0F"
       }], resolve).open();
     });
     if (!confirmed) return;
@@ -11914,6 +12162,8 @@ ${errors.map((item) => `${item.code}: ${item.message}`).join("\n")}`;
     const items = await this.collectWorkspaceItems();
     new WorkspaceBrowserModal(this.app, items, async (item) => {
       await this.openWorkspaceFile(item.file);
+    }, async (item) => {
+      await this.copyWorkspaceLaunchUrl(item.file);
     }).open();
   }
   async showSystemDiagnostics() {

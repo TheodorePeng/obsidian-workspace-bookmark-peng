@@ -1,12 +1,10 @@
 // tests/runtime.test.mjs — Node test runner regression for the BRAT online release contract.
 //
 // Run with:
-//   node --test tests/runtime.test.mjs                              # full run (draft must exist)
-//   node --test --test-skip-pattern='release attaches BRAT-required assets' \
-//     tests/runtime.test.mjs                                        # skip this test (pre-draft)
+//   npm run test:release                                             # draft must exist
 //
 // Environment overrides (CI / future-proofing):
-//   BRAT_TAG          tag name expected on the GitHub Release (default: 0.2.9)
+//   BRAT_TAG          tag name expected on the GitHub Release (default: 0.2.12)
 //   BRAT_OWNER_REPO   "owner/name" GitHub slug            (default: TheodorePeng/obsidian-workspace-bookmark-peng)
 //   BRAT_REPO_ROOT    filesystem path to the repo root   (default: ".")
 
@@ -14,7 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
-const TAG = process.env.BRAT_TAG || '0.2.9';
+const TAG = process.env.BRAT_TAG || '0.2.12';
 const OWNER_REPO = process.env.BRAT_OWNER_REPO || 'TheodorePeng/obsidian-workspace-bookmark-peng';
 
 function gh(args) {

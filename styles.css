@@ -1,5 +1,5 @@
 /*
- * Workspace Bookmark 0.2.9
+ * Workspace Bookmark 0.2.12
  * A dense, Obsidian-native workspace utility.
  */
 
@@ -135,6 +135,15 @@
 .workspace-bookmark-form-section {
   margin: 0;
   padding: 0;
+}
+
+.workspace-bookmark-copyable-text {
+  box-sizing: border-box;
+  font-family: var(--font-monospace);
+  line-height: 1.45;
+  min-height: 112px;
+  resize: vertical;
+  width: 100%;
 }
 
 .workspace-bookmark-form-section + .workspace-bookmark-form-section,

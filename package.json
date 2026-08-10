@@ -1,6 +1,6 @@
 {
   "name": "workspace-bookmark-peng",
-  "version": "0.2.9",
+  "version": "0.2.12",
   "description": "Workspace Bookmark Peng Obsidian plugin",
   "main": "main.js",
   "type": "module",
@@ -10,7 +10,8 @@
     "dev": "node esbuild.config.mjs",
     "deploy:local": "npm run build && node scripts/deploy-local.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --exclude '**/runtime.test.mjs' && node --test tests/runtime.test.mjs"
+    "test": "vitest run --exclude '**/runtime.test.mjs'",
+    "test:release": "node --test tests/runtime.test.mjs"
   },
   "dependencies": {
     "yaml": "^2.8.1"

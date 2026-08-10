@@ -1,7 +1,7 @@
 {
   "id": "workspace-bookmark-peng",
   "name": "Workspace Bookmark Peng",
-  "version": "0.2.9",
+  "version": "0.2.12",
   "minAppVersion": "1.12.2",
   "description": "Capture, edit, validate, and restore macOS workspaces from Markdown.",
   "author": "Peng",
